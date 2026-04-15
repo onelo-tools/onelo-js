@@ -1,37 +1,10 @@
-"use strict";
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-// src/index.ts
-var index_exports = {};
-__export(index_exports, {
-  Onelo: () => Onelo,
-  OneloError: () => import_core6.OneloError
-});
-module.exports = __toCommonJS(index_exports);
-
 // src/auth/auth.ts
-var import_core2 = require("@onelo/core");
-var import_core3 = require("@onelo/core");
-var import_core4 = require("@onelo/core");
+import { generateCodeVerifier, generateCodeChallenge } from "@onelo/core";
+import { httpGet, httpPost, checkHostedFlowRequired } from "@onelo/core";
+import { mapSession } from "@onelo/core";
 
 // src/core/storage.ts
-var import_core = require("@onelo/core");
+import { TOKEN_KEYS } from "@onelo/core";
 var TokenStorage = class {
   constructor() {
     this.memory = /* @__PURE__ */ new Map();
@@ -59,7 +32,7 @@ var TokenStorage = class {
   }
   async clear() {
     if (this.useLocalStorage) {
-      for (const key of Object.values(import_core.TOKEN_KEYS)) {
+      for (const key of Object.values(TOKEN_KEYS)) {
         localStorage.removeItem(key);
       }
     } else {
@@ -156,7 +129,9 @@ var AuthModal = class {
 };
 
 // src/auth/auth.ts
-var import_core5 = require("@onelo/core");
+import {
+  OneloError
+} from "@onelo/core";
 
 // package.json
 var version = "0.2.0-staging";
@@ -181,13 +156,13 @@ var OneloAuth = class {
   }
   async initialize() {
     try {
-      const verifier = (0, import_core2.generateCodeVerifier)();
+      const verifier = generateCodeVerifier();
       this.pkceVerifier = verifier;
-      const challenge = await (0, import_core2.generateCodeChallenge)(verifier);
+      const challenge = await generateCodeChallenge(verifier);
       const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}`;
-      const { status, json } = await (0, import_core3.httpGet)(url, { "X-SDK-Version": version });
-      if (status === 401 || status === 404) throw import_core5.OneloError.invalidKey("Server rejected the key");
-      if (status !== 200) throw import_core5.OneloError.server(`Config request failed: HTTP ${status}`);
+      const { status, json } = await httpGet(url, { "X-SDK-Version": version });
+      if (status === 401 || status === 404) throw OneloError.invalidKey("Server rejected the key");
+      if (status !== 200) throw OneloError.server(`Config request failed: HTTP ${status}`);
       const j = json;
       this.resolvedConfig = {
         supabaseUrl: j["supabase_url"],
@@ -202,7 +177,7 @@ var OneloAuth = class {
       this.appLogoUrl = this.resolvedConfig.appLogoUrl;
       this.isReady = true;
     } catch (e) {
-      if (e instanceof import_core5.OneloError && e.code === "invalid_publishable_key") {
+      if (e instanceof OneloError && e.code === "invalid_publishable_key") {
         this.isRevoked = true;
       }
     }
@@ -213,31 +188,31 @@ var OneloAuth = class {
   // ── Hosted flow ─────────────────────────────────────────────────────────────
   async loadAuthView() {
     await this.initPromise;
-    if (this.isRevoked) throw import_core5.OneloError.invalidKey("Application key has been revoked");
+    if (this.isRevoked) throw OneloError.invalidKey("Application key has been revoked");
     const hostedUrl = await this.getHostedUrl();
     const modal = new AuthModal(this.apiUrl);
     const result = await modal.open(hostedUrl);
     if (result.type === "cancelled") return null;
-    if (result.type === "error") throw import_core5.OneloError.server(result.message);
-    const { status, json } = await (0, import_core3.httpPost)(
+    if (result.type === "error") throw OneloError.server(result.message);
+    const { status, json } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,
       { publishableKey: this.publishableKey, code: result.code },
       { "X-SDK-Version": version }
     );
-    if (status !== 200) throw import_core5.OneloError.server("Hosted callback failed");
-    const session = (0, import_core4.mapSession)(json);
+    if (status !== 200) throw OneloError.server("Hosted callback failed");
+    const session = mapSession(json);
     await this.saveSession(session);
     return session;
   }
   async getHostedUrl() {
-    const { status, json } = await (0, import_core3.httpGet)(
+    const { status, json } = await httpGet(
       `${this.apiUrl}/api/sdk/auth/initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`,
       { "X-SDK-Version": version }
     );
-    if (status !== 200) throw import_core5.OneloError.server("Failed to initiate hosted auth flow");
+    if (status !== 200) throw OneloError.server("Failed to initiate hosted auth flow");
     const j = json;
     const hostedUrl = j["hosted_url"];
-    if (!hostedUrl) throw import_core5.OneloError.server("Invalid initiate response");
+    if (!hostedUrl) throw OneloError.server("Invalid initiate response");
     if (j["app_name"]) this.appName = j["app_name"];
     if (j["app_logo_url"]) this.appLogoUrl = j["app_logo_url"];
     return hostedUrl;
@@ -245,40 +220,40 @@ var OneloAuth = class {
   // ── Custom UI (paid plans only) ─────────────────────────────────────────────
   async signIn(email, password) {
     await this.initPromise;
-    if (!this.allowCustomBranding) throw import_core5.OneloError.planRequired();
-    if (!this.pkceVerifier) this.pkceVerifier = (0, import_core2.generateCodeVerifier)();
-    const { status, json } = await (0, import_core3.httpPost)(
+    if (!this.allowCustomBranding) throw OneloError.planRequired();
+    if (!this.pkceVerifier) this.pkceVerifier = generateCodeVerifier();
+    const { status, json } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/signin`,
       { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier },
       { "X-SDK-Version": version }
     );
-    (0, import_core3.checkHostedFlowRequired)(json);
+    checkHostedFlowRequired(json);
     const j = json;
     if (status === 403) {
       const detail = j["detail"];
-      if (detail?.["error"] === "user_revoked") throw import_core5.OneloError.userRevoked();
-      throw import_core5.OneloError.server(detail?.["message"] ?? j["error"]);
+      if (detail?.["error"] === "user_revoked") throw OneloError.userRevoked();
+      throw OneloError.server(detail?.["message"] ?? j["error"]);
     }
-    if (status !== 200) throw import_core5.OneloError.server(`Sign in failed: HTTP ${status}`);
+    if (status !== 200) throw OneloError.server(`Sign in failed: HTTP ${status}`);
     this.pkceVerifier = null;
-    const session = (0, import_core4.mapSession)(j);
+    const session = mapSession(j);
     await this.saveSession(session);
     return session;
   }
   async signUp(email, password) {
     await this.initPromise;
-    if (!this.allowCustomBranding) throw import_core5.OneloError.planRequired();
-    if (!this.pkceVerifier) this.pkceVerifier = (0, import_core2.generateCodeVerifier)();
-    const { status, json } = await (0, import_core3.httpPost)(
+    if (!this.allowCustomBranding) throw OneloError.planRequired();
+    if (!this.pkceVerifier) this.pkceVerifier = generateCodeVerifier();
+    const { status, json } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/signup`,
       { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier },
       { "X-SDK-Version": version }
     );
-    (0, import_core3.checkHostedFlowRequired)(json);
+    checkHostedFlowRequired(json);
     const j = json;
-    if (status !== 200) throw import_core5.OneloError.server(`Sign up failed: HTTP ${status}`);
+    if (status !== 200) throw OneloError.server(`Sign up failed: HTTP ${status}`);
     this.pkceVerifier = null;
-    const session = (0, import_core4.mapSession)(j);
+    const session = mapSession(j);
     await this.saveSession(session);
     return session;
   }
@@ -289,10 +264,10 @@ var OneloAuth = class {
   }
   async getSession() {
     const [accessToken, refreshToken, expiresAtStr, userJson] = await Promise.all([
-      this.storage.get(import_core.TOKEN_KEYS.ACCESS_TOKEN),
-      this.storage.get(import_core.TOKEN_KEYS.REFRESH_TOKEN),
-      this.storage.get(import_core.TOKEN_KEYS.EXPIRES_AT),
-      this.storage.get(import_core.TOKEN_KEYS.USER_JSON)
+      this.storage.get(TOKEN_KEYS.ACCESS_TOKEN),
+      this.storage.get(TOKEN_KEYS.REFRESH_TOKEN),
+      this.storage.get(TOKEN_KEYS.EXPIRES_AT),
+      this.storage.get(TOKEN_KEYS.USER_JSON)
     ]);
     if (!accessToken || !refreshToken || !userJson) return null;
     const expiresAt = parseInt(expiresAtStr ?? "0", 10);
@@ -302,31 +277,31 @@ var OneloAuth = class {
     return { accessToken, refreshToken, expiresAt, user: JSON.parse(userJson) };
   }
   async refreshSession() {
-    const refreshToken = await this.storage.get(import_core.TOKEN_KEYS.REFRESH_TOKEN);
+    const refreshToken = await this.storage.get(TOKEN_KEYS.REFRESH_TOKEN);
     if (!refreshToken) return null;
-    const { status, json } = await (0, import_core3.httpPost)(
+    const { status, json } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/refresh`,
       { publishableKey: this.publishableKey, refreshToken },
       { "X-SDK-Version": version }
     );
-    (0, import_core3.checkHostedFlowRequired)(json);
+    checkHostedFlowRequired(json);
     const j = json;
     if (j["error"] === "user_revoked") {
       await this.storage.clear();
       this.notifyListeners(null);
-      throw import_core5.OneloError.userRevoked();
+      throw OneloError.userRevoked();
     }
     if (j["error"] === "app_revoked") {
       await this.storage.clear();
       this.notifyListeners(null);
-      throw import_core5.OneloError.revoked();
+      throw OneloError.revoked();
     }
     if (status !== 200) {
       await this.storage.clear();
       this.notifyListeners(null);
       return null;
     }
-    const session = (0, import_core4.mapSession)(j);
+    const session = mapSession(j);
     await this.saveSession(session);
     return session;
   }
@@ -339,10 +314,10 @@ var OneloAuth = class {
   // ── Helpers ─────────────────────────────────────────────────────────────────
   async saveSession(session) {
     await Promise.all([
-      this.storage.set(import_core.TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
-      this.storage.set(import_core.TOKEN_KEYS.REFRESH_TOKEN, session.refreshToken),
-      this.storage.set(import_core.TOKEN_KEYS.EXPIRES_AT, String(session.expiresAt)),
-      this.storage.set(import_core.TOKEN_KEYS.USER_JSON, JSON.stringify(session.user))
+      this.storage.set(TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
+      this.storage.set(TOKEN_KEYS.REFRESH_TOKEN, session.refreshToken),
+      this.storage.set(TOKEN_KEYS.EXPIRES_AT, String(session.expiresAt)),
+      this.storage.set(TOKEN_KEYS.USER_JSON, JSON.stringify(session.user))
     ]);
     this.notifyListeners(session);
   }
@@ -359,9 +334,8 @@ var Onelo = class {
 };
 
 // src/index.ts
-var import_core6 = require("@onelo/core");
-// Annotate the CommonJS export names for ESM import in node:
-0 && (module.exports = {
+import { OneloError as OneloError2 } from "@onelo/core";
+export {
   Onelo,
-  OneloError
-});
+  OneloError2 as OneloError
+};

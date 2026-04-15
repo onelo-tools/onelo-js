@@ -1,5 +1,7 @@
 import { OneloConfig, OneloSession } from '@onelo/core';
-export declare class OneloAuth {
+export { OneloConfig, OneloError, OneloSession, OneloUser } from '@onelo/core';
+
+declare class OneloAuth {
     private storage;
     private apiUrl;
     private publishableKey;
@@ -26,4 +28,10 @@ export declare class OneloAuth {
     private saveSession;
     private notifyListeners;
 }
-//# sourceMappingURL=auth.d.ts.map
+
+declare class Onelo {
+    readonly auth: OneloAuth;
+    constructor(config: OneloConfig);
+}
+
+export { Onelo };

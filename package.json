@@ -3,17 +3,19 @@
   "version": "0.2.0-staging",
   "description": "Onelo Web SDK",
   "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "test": "vitest run"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
+    "tsup": "^8.0.0",
     "vitest": "^1.6.0",
     "jsdom": "^24.0.0",
     "@vitest/coverage-v8": "^1.6.0"
