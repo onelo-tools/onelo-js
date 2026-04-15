@@ -4,10 +4,9 @@
   "description": "Onelo Web SDK",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
-  "dependencies": {
-    "@onelo/core": "workspace:*"
-  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -23,4 +22,3 @@
     "access": "public"
   }
 }
-
