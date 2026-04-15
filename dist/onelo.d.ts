@@ -1,5 +1,5 @@
 import { OneloAuth } from './auth/auth';
-import { OneloConfig } from './core/types';
+import { OneloConfig } from '@onelo/core';
 export declare class Onelo {
     readonly auth: OneloAuth;
     constructor(config: OneloConfig);

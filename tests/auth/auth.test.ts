@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { OneloAuth } from '../../src/auth/auth'
-import { OneloError } from '../../src/core/types'
+import { OneloError } from '@onelo/core'
 
 // Mock fetch globally
 const mockFetch = vi.fn()

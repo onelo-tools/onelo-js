@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { generateCodeVerifier, generateCodeChallenge } from '../../src/core/pkce'
+import { generateCodeVerifier, generateCodeChallenge } from '@onelo/core'
 
 describe('PKCE helpers', () => {
   it('generates a verifier of correct length', () => {

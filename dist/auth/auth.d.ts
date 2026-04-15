@@ -1,4 +1,4 @@
-import { OneloConfig, OneloSession } from '../core/types';
+import { OneloConfig, OneloSession } from '@onelo/core';
 export declare class OneloAuth {
     private storage;
     private apiUrl;
@@ -23,7 +23,6 @@ export declare class OneloAuth {
     getSession(): Promise<OneloSession | null>;
     refreshSession(): Promise<OneloSession | null>;
     onAuthStateChange(callback: (session: OneloSession | null) => void): () => void;
-    private mapSession;
     private saveSession;
     private notifyListeners;
 }

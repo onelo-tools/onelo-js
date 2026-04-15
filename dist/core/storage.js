@@ -1,16 +1,12 @@
 "use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TokenStorage = exports.TOKEN_KEYS = void 0;
+const core_1 = require("@onelo/core");
+Object.defineProperty(exports, "TOKEN_KEYS", { enumerable: true, get: function () { return core_1.TOKEN_KEYS; } });
 /**
  * Token storage using localStorage with in-memory fallback
  * (for environments where localStorage is unavailable, e.g. SSR).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.TokenStorage = exports.TOKEN_KEYS = void 0;
-exports.TOKEN_KEYS = {
-    ACCESS_TOKEN: 'onelo_access_token',
-    REFRESH_TOKEN: 'onelo_refresh_token',
-    EXPIRES_AT: 'onelo_expires_at',
-    USER_JSON: 'onelo_user',
-};
 class TokenStorage {
     constructor() {
         this.memory = new Map();
@@ -40,7 +36,7 @@ class TokenStorage {
     }
     async clear() {
         if (this.useLocalStorage) {
-            for (const key of Object.values(exports.TOKEN_KEYS)) {
+            for (const key of Object.values(core_1.TOKEN_KEYS)) {
                 localStorage.removeItem(key);
             }
         }

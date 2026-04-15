@@ -1,5 +1,6 @@
-import { generateCodeVerifier, generateCodeChallenge } from '../core/pkce'
-import { httpGet, httpPost, checkHostedFlowRequired } from '../core/http'
+import { generateCodeVerifier, generateCodeChallenge } from '@onelo/core'
+import { httpGet, httpPost, checkHostedFlowRequired } from '@onelo/core'
+import { mapSession } from '@onelo/core'
 import { TokenStorage, TOKEN_KEYS } from '../core/storage'
 import { AuthModal } from './auth-modal'
 import {
@@ -8,7 +9,7 @@ import {
   OneloUser,
   OneloError,
   ResolvedSDKConfig,
-} from '../core/types'
+} from '@onelo/core'
 import { version as SDK_VERSION } from '../../package.json'
 
 export class OneloAuth {
@@ -86,7 +87,7 @@ export class OneloAuth {
       { 'X-SDK-Version': SDK_VERSION }
     )
     if (status !== 200) throw OneloError.server('Hosted callback failed')
-    const session = this.mapSession(json as Record<string, unknown>)
+    const session = mapSession(json as Record<string, unknown>)
     await this.saveSession(session)
     return session
   }
@@ -125,7 +126,7 @@ export class OneloAuth {
     }
     if (status !== 200) throw OneloError.server(`Sign in failed: HTTP ${status}`)
     this.pkceVerifier = null
-    const session = this.mapSession(j)
+    const session = mapSession(j)
     await this.saveSession(session)
     return session
   }
@@ -143,7 +144,7 @@ export class OneloAuth {
     const j = json as Record<string, unknown>
     if (status !== 200) throw OneloError.server(`Sign up failed: HTTP ${status}`)
     this.pkceVerifier = null
-    const session = this.mapSession(j)
+    const session = mapSession(j)
     await this.saveSession(session)
     return session
   }
@@ -183,7 +184,7 @@ export class OneloAuth {
     if (j['error'] === 'user_revoked') { await this.storage.clear(); this.notifyListeners(null); throw OneloError.userRevoked() }
     if (j['error'] === 'app_revoked') { await this.storage.clear(); this.notifyListeners(null); throw OneloError.revoked() }
     if (status !== 200) { await this.storage.clear(); this.notifyListeners(null); return null }
-    const session = this.mapSession(j)
+    const session = mapSession(j)
     await this.saveSession(session)
     return session
   }
@@ -196,22 +197,6 @@ export class OneloAuth {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-
-  private mapSession(j: Record<string, unknown>): OneloSession {
-    const user = j['user'] as Record<string, unknown>
-    const appMeta = (user?.['app_metadata'] as Record<string, unknown>) ?? {}
-    return {
-      accessToken: j['access_token'] as string,
-      refreshToken: j['refresh_token'] as string,
-      expiresAt: (j['expires_at'] as number) ?? 0,
-      user: {
-        id: user['id'] as string,
-        email: user['email'] as string | undefined,
-        role: ((appMeta['user_role'] ?? user['role'] ?? 'member') as OneloUser['role']),
-        tenantId: ((appMeta['tenant_id'] ?? user['tenant_id']) as string | null) ?? null,
-      },
-    }
-  }
 
   private async saveSession(session: OneloSession): Promise<void> {
     await Promise.all([

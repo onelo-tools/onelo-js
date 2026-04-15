@@ -5,6 +5,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist"],
+  "dependencies": {
+    "@onelo/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

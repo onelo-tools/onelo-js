@@ -1,17 +1,11 @@
+import { TOKEN_KEYS, type TokenKey } from '@onelo/core'
+
+export { TOKEN_KEYS, type TokenKey }
+
 /**
  * Token storage using localStorage with in-memory fallback
  * (for environments where localStorage is unavailable, e.g. SSR).
  */
-
-export const TOKEN_KEYS = {
-  ACCESS_TOKEN: 'onelo_access_token',
-  REFRESH_TOKEN: 'onelo_refresh_token',
-  EXPIRES_AT: 'onelo_expires_at',
-  USER_JSON: 'onelo_user',
-} as const
-
-export type TokenKey = typeof TOKEN_KEYS[keyof typeof TOKEN_KEYS]
-
 export class TokenStorage {
   private memory: Map<string, string> = new Map()
   private useLocalStorage: boolean

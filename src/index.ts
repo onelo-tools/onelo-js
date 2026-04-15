@@ -1,3 +1,3 @@
 export { Onelo } from './onelo'
-export { OneloError } from './core/types'
-export type { OneloConfig, OneloSession, OneloUser } from './core/types'
+export { OneloError } from '@onelo/core'
+export type { OneloConfig, OneloSession, OneloUser } from '@onelo/core'

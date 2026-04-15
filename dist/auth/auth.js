@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OneloAuth = void 0;
-const pkce_1 = require("../core/pkce");
-const http_1 = require("../core/http");
+const core_1 = require("@onelo/core");
+const core_2 = require("@onelo/core");
+const core_3 = require("@onelo/core");
 const storage_1 = require("../core/storage");
 const auth_modal_1 = require("./auth-modal");
-const types_1 = require("../core/types");
+const core_4 = require("@onelo/core");
 const package_json_1 = require("../../package.json");
 class OneloAuth {
     constructor(config) {
@@ -28,15 +29,15 @@ class OneloAuth {
     }
     async initialize() {
         try {
-            const verifier = (0, pkce_1.generateCodeVerifier)();
+            const verifier = (0, core_1.generateCodeVerifier)();
             this.pkceVerifier = verifier;
-            const challenge = await (0, pkce_1.generateCodeChallenge)(verifier);
+            const challenge = await (0, core_1.generateCodeChallenge)(verifier);
             const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}`;
-            const { status, json } = await (0, http_1.httpGet)(url, { 'X-SDK-Version': package_json_1.version });
+            const { status, json } = await (0, core_2.httpGet)(url, { 'X-SDK-Version': package_json_1.version });
             if (status === 401 || status === 404)
-                throw types_1.OneloError.invalidKey('Server rejected the key');
+                throw core_4.OneloError.invalidKey('Server rejected the key');
             if (status !== 200)
-                throw types_1.OneloError.server(`Config request failed: HTTP ${status}`);
+                throw core_4.OneloError.server(`Config request failed: HTTP ${status}`);
             const j = json;
             this.resolvedConfig = {
                 supabaseUrl: j['supabase_url'],
@@ -53,7 +54,7 @@ class OneloAuth {
             this.isReady = true;
         }
         catch (e) {
-            if (e instanceof types_1.OneloError && e.code === 'invalid_publishable_key') {
+            if (e instanceof core_4.OneloError && e.code === 'invalid_publishable_key') {
                 this.isRevoked = true;
             }
         }
@@ -65,29 +66,29 @@ class OneloAuth {
     async loadAuthView() {
         await this.initPromise;
         if (this.isRevoked)
-            throw types_1.OneloError.invalidKey('Application key has been revoked');
+            throw core_4.OneloError.invalidKey('Application key has been revoked');
         const hostedUrl = await this.getHostedUrl();
         const modal = new auth_modal_1.AuthModal(this.apiUrl);
         const result = await modal.open(hostedUrl);
         if (result.type === 'cancelled')
             return null;
         if (result.type === 'error')
-            throw types_1.OneloError.server(result.message);
-        const { status, json } = await (0, http_1.httpPost)(`${this.apiUrl}/api/sdk/auth/hosted-callback`, { publishableKey: this.publishableKey, code: result.code }, { 'X-SDK-Version': package_json_1.version });
+            throw core_4.OneloError.server(result.message);
+        const { status, json } = await (0, core_2.httpPost)(`${this.apiUrl}/api/sdk/auth/hosted-callback`, { publishableKey: this.publishableKey, code: result.code }, { 'X-SDK-Version': package_json_1.version });
         if (status !== 200)
-            throw types_1.OneloError.server('Hosted callback failed');
-        const session = this.mapSession(json);
+            throw core_4.OneloError.server('Hosted callback failed');
+        const session = (0, core_3.mapSession)(json);
         await this.saveSession(session);
         return session;
     }
     async getHostedUrl() {
-        const { status, json } = await (0, http_1.httpGet)(`${this.apiUrl}/api/sdk/auth/initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`, { 'X-SDK-Version': package_json_1.version });
+        const { status, json } = await (0, core_2.httpGet)(`${this.apiUrl}/api/sdk/auth/initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`, { 'X-SDK-Version': package_json_1.version });
         if (status !== 200)
-            throw types_1.OneloError.server('Failed to initiate hosted auth flow');
+            throw core_4.OneloError.server('Failed to initiate hosted auth flow');
         const j = json;
         const hostedUrl = j['hosted_url'];
         if (!hostedUrl)
-            throw types_1.OneloError.server('Invalid initiate response');
+            throw core_4.OneloError.server('Invalid initiate response');
         if (j['app_name'])
             this.appName = j['app_name'];
         if (j['app_logo_url'])
@@ -98,38 +99,38 @@ class OneloAuth {
     async signIn(email, password) {
         await this.initPromise;
         if (!this.allowCustomBranding)
-            throw types_1.OneloError.planRequired();
+            throw core_4.OneloError.planRequired();
         if (!this.pkceVerifier)
-            this.pkceVerifier = (0, pkce_1.generateCodeVerifier)();
-        const { status, json } = await (0, http_1.httpPost)(`${this.apiUrl}/api/sdk/auth/signin`, { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier }, { 'X-SDK-Version': package_json_1.version });
-        (0, http_1.checkHostedFlowRequired)(json);
+            this.pkceVerifier = (0, core_1.generateCodeVerifier)();
+        const { status, json } = await (0, core_2.httpPost)(`${this.apiUrl}/api/sdk/auth/signin`, { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier }, { 'X-SDK-Version': package_json_1.version });
+        (0, core_2.checkHostedFlowRequired)(json);
         const j = json;
         if (status === 403) {
             const detail = j['detail'];
             if (detail?.['error'] === 'user_revoked')
-                throw types_1.OneloError.userRevoked();
-            throw types_1.OneloError.server((detail?.['message'] ?? j['error']));
+                throw core_4.OneloError.userRevoked();
+            throw core_4.OneloError.server((detail?.['message'] ?? j['error']));
         }
         if (status !== 200)
-            throw types_1.OneloError.server(`Sign in failed: HTTP ${status}`);
+            throw core_4.OneloError.server(`Sign in failed: HTTP ${status}`);
         this.pkceVerifier = null;
-        const session = this.mapSession(j);
+        const session = (0, core_3.mapSession)(j);
         await this.saveSession(session);
         return session;
     }
     async signUp(email, password) {
         await this.initPromise;
         if (!this.allowCustomBranding)
-            throw types_1.OneloError.planRequired();
+            throw core_4.OneloError.planRequired();
         if (!this.pkceVerifier)
-            this.pkceVerifier = (0, pkce_1.generateCodeVerifier)();
-        const { status, json } = await (0, http_1.httpPost)(`${this.apiUrl}/api/sdk/auth/signup`, { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier }, { 'X-SDK-Version': package_json_1.version });
-        (0, http_1.checkHostedFlowRequired)(json);
+            this.pkceVerifier = (0, core_1.generateCodeVerifier)();
+        const { status, json } = await (0, core_2.httpPost)(`${this.apiUrl}/api/sdk/auth/signup`, { email, password, publishableKey: this.publishableKey, code_verifier: this.pkceVerifier }, { 'X-SDK-Version': package_json_1.version });
+        (0, core_2.checkHostedFlowRequired)(json);
         const j = json;
         if (status !== 200)
-            throw types_1.OneloError.server(`Sign up failed: HTTP ${status}`);
+            throw core_4.OneloError.server(`Sign up failed: HTTP ${status}`);
         this.pkceVerifier = null;
-        const session = this.mapSession(j);
+        const session = (0, core_3.mapSession)(j);
         await this.saveSession(session);
         return session;
     }
@@ -157,25 +158,25 @@ class OneloAuth {
         const refreshToken = await this.storage.get(storage_1.TOKEN_KEYS.REFRESH_TOKEN);
         if (!refreshToken)
             return null;
-        const { status, json } = await (0, http_1.httpPost)(`${this.apiUrl}/api/sdk/auth/refresh`, { publishableKey: this.publishableKey, refreshToken }, { 'X-SDK-Version': package_json_1.version });
-        (0, http_1.checkHostedFlowRequired)(json);
+        const { status, json } = await (0, core_2.httpPost)(`${this.apiUrl}/api/sdk/auth/refresh`, { publishableKey: this.publishableKey, refreshToken }, { 'X-SDK-Version': package_json_1.version });
+        (0, core_2.checkHostedFlowRequired)(json);
         const j = json;
         if (j['error'] === 'user_revoked') {
             await this.storage.clear();
             this.notifyListeners(null);
-            throw types_1.OneloError.userRevoked();
+            throw core_4.OneloError.userRevoked();
         }
         if (j['error'] === 'app_revoked') {
             await this.storage.clear();
             this.notifyListeners(null);
-            throw types_1.OneloError.revoked();
+            throw core_4.OneloError.revoked();
         }
         if (status !== 200) {
             await this.storage.clear();
             this.notifyListeners(null);
             return null;
         }
-        const session = this.mapSession(j);
+        const session = (0, core_3.mapSession)(j);
         await this.saveSession(session);
         return session;
     }
@@ -186,21 +187,6 @@ class OneloAuth {
         };
     }
     // ── Helpers ─────────────────────────────────────────────────────────────────
-    mapSession(j) {
-        const user = j['user'];
-        const appMeta = user?.['app_metadata'] ?? {};
-        return {
-            accessToken: j['access_token'],
-            refreshToken: j['refresh_token'],
-            expiresAt: j['expires_at'] ?? 0,
-            user: {
-                id: user['id'],
-                email: user['email'],
-                role: (appMeta['user_role'] ?? user['role'] ?? 'member'),
-                tenantId: (appMeta['tenant_id'] ?? user['tenant_id']) ?? null,
-            },
-        };
-    }
     async saveSession(session) {
         await Promise.all([
             this.storage.set(storage_1.TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
