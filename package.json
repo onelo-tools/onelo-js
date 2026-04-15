@@ -1,37 +1,20 @@
 {
-  "name": "@onelo/sdk",
-  "version": "1.0.0",
-  "description": "Unified Onelo JavaScript/TypeScript SDK",
-  "keywords": ["onelo", "sdk", "feature-flags", "paywall", "forms", "waitlist"],
-  "homepage": "https://github.com/onelo-tools/onelo-js#readme",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/onelo-tools/onelo-js.git"
-  },
-  "license": "MIT",
-  "type": "module",
-  "main": "./dist/onelo-sdk.cjs",
-  "module": "./dist/onelo-sdk.js",
+  "name": "@onelo/js",
+  "version": "0.2.0-staging",
+  "description": "Onelo Web SDK",
+  "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/onelo-sdk.js",
-      "require": "./dist/onelo-sdk.cjs",
-      "types": "./dist/index.d.ts"
-    }
-  },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc --noEmit && vite build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.4.5",
-    "vite": "^5.2.0",
-    "vite-plugin-dts": "^3.9.1",
-    "vitest": "^1.6.0"
+    "typescript": "^5.7.0",
+    "vitest": "^1.6.0",
+    "jsdom": "^24.0.0",
+    "@vitest/coverage-v8": "^1.6.0"
   },
   "publishConfig": {
     "access": "public"
