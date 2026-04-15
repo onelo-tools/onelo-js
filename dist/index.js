@@ -1,8 +1,13 @@
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -15,7 +20,199 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// ../onelo-core/dist/types.js
+var require_types = __commonJS({
+  "../onelo-core/dist/types.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.OneloError = void 0;
+    var OneloError3 = class _OneloError extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = "OneloError";
+      }
+      static notAuthenticated() {
+        return new _OneloError("not_authenticated", "User is not authenticated");
+      }
+      static hostedFlowRequired() {
+        return new _OneloError("hosted_flow_required", "This app requires the hosted sign-in flow. Use loadAuthView().");
+      }
+      static planRequired() {
+        return new _OneloError("plan_required", "[plan_required] Custom UI requires a paid Onelo plan. Use loadAuthView() instead.");
+      }
+      static invalidKey(msg) {
+        return new _OneloError("invalid_publishable_key", `Invalid publishable key: ${msg}`);
+      }
+      static network(msg) {
+        return new _OneloError("network_error", `Network error: ${msg}`);
+      }
+      static server(msg) {
+        return new _OneloError("server_error", msg);
+      }
+      static cancelled() {
+        return new _OneloError("cancelled", "Sign in was cancelled");
+      }
+      static revoked() {
+        return new _OneloError("revoked", "This application has been revoked");
+      }
+      static userRevoked() {
+        return new _OneloError("user_revoked", "This user account has been suspended");
+      }
+    };
+    exports2.OneloError = OneloError3;
+  }
+});
+
+// ../onelo-core/dist/pkce.js
+var require_pkce = __commonJS({
+  "../onelo-core/dist/pkce.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.generateCodeVerifier = generateCodeVerifier2;
+    exports2.generateCodeChallenge = generateCodeChallenge2;
+    function generateCodeVerifier2() {
+      const array = new Uint8Array(32);
+      crypto.getRandomValues(array);
+      return base64urlEncode(array);
+    }
+    async function generateCodeChallenge2(verifier) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(verifier);
+      const digest = await crypto.subtle.digest("SHA-256", data);
+      return base64urlEncode(new Uint8Array(digest));
+    }
+    function base64urlEncode(bytes) {
+      let str = "";
+      for (const byte of bytes) {
+        str += String.fromCharCode(byte);
+      }
+      return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+    }
+  }
+});
+
+// ../onelo-core/dist/http.js
+var require_http = __commonJS({
+  "../onelo-core/dist/http.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.httpGet = httpGet2;
+    exports2.httpPost = httpPost2;
+    exports2.checkHostedFlowRequired = checkHostedFlowRequired2;
+    var types_1 = require_types();
+    async function httpGet2(url, headers) {
+      let res;
+      try {
+        res = await fetch(url, { headers });
+      } catch (e) {
+        throw types_1.OneloError.network(e instanceof Error ? e.message : "fetch failed");
+      }
+      const json = await parseJson(res);
+      return { status: res.status, json };
+    }
+    async function httpPost2(url, body, headers) {
+      let res;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...headers },
+          body: JSON.stringify(body)
+        });
+      } catch (e) {
+        throw types_1.OneloError.network(e instanceof Error ? e.message : "fetch failed");
+      }
+      const json = await parseJson(res);
+      return { status: res.status, json };
+    }
+    async function parseJson(res) {
+      try {
+        return await res.json();
+      } catch {
+        throw types_1.OneloError.network("Invalid JSON response");
+      }
+    }
+    function checkHostedFlowRequired2(json) {
+      const j = json;
+      const errorCode = j["error"] ?? j["detail"]?.["error"];
+      if (errorCode === "hosted_flow_required") {
+        const hint = j["hint"] ?? j["detail"]?.["hint"] ?? "Use loadAuthView() in your web app.";
+        console.warn("[Onelo] \u26A0\uFE0F  hosted_flow_required:", hint);
+        console.info("[Onelo] \u{1F4A1} Fix: call onelo.auth.loadAuthView() or upgrade your Onelo plan.");
+        throw types_1.OneloError.hostedFlowRequired();
+      }
+    }
+  }
+});
+
+// ../onelo-core/dist/session.js
+var require_session = __commonJS({
+  "../onelo-core/dist/session.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.TOKEN_KEYS = void 0;
+    exports2.mapSession = mapSession2;
+    function mapSession2(j) {
+      const user = j["user"];
+      const appMeta = user?.["app_metadata"] ?? {};
+      return {
+        accessToken: j["access_token"],
+        refreshToken: j["refresh_token"],
+        expiresAt: j["expires_at"] ?? 0,
+        user: {
+          id: user["id"],
+          email: user["email"],
+          role: appMeta["user_role"] ?? user["role"] ?? "member",
+          tenantId: appMeta["tenant_id"] ?? user["tenant_id"] ?? null
+        }
+      };
+    }
+    exports2.TOKEN_KEYS = {
+      ACCESS_TOKEN: "onelo_access_token",
+      REFRESH_TOKEN: "onelo_refresh_token",
+      EXPIRES_AT: "onelo_expires_at",
+      USER_JSON: "onelo_user"
+    };
+  }
+});
+
+// ../onelo-core/dist/index.js
+var require_dist = __commonJS({
+  "../onelo-core/dist/index.js"(exports2) {
+    "use strict";
+    var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
+      if (k2 === void 0) k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    }) : (function(o, m, k, k2) {
+      if (k2 === void 0) k2 = k;
+      o[k2] = m[k];
+    }));
+    var __exportStar = exports2 && exports2.__exportStar || function(m, exports3) {
+      for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports3, p)) __createBinding(exports3, m, p);
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    __exportStar(require_types(), exports2);
+    __exportStar(require_pkce(), exports2);
+    __exportStar(require_http(), exports2);
+    __exportStar(require_session(), exports2);
+  }
+});
 
 // src/index.ts
 var index_exports = {};
@@ -26,12 +223,12 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/auth/auth.ts
-var import_core2 = require("@onelo/core");
-var import_core3 = require("@onelo/core");
-var import_core4 = require("@onelo/core");
+var import_core2 = __toESM(require_dist());
+var import_core3 = __toESM(require_dist());
+var import_core4 = __toESM(require_dist());
 
 // src/core/storage.ts
-var import_core = require("@onelo/core");
+var import_core = __toESM(require_dist());
 var TokenStorage = class {
   constructor() {
     this.memory = /* @__PURE__ */ new Map();
@@ -156,7 +353,7 @@ var AuthModal = class {
 };
 
 // src/auth/auth.ts
-var import_core5 = require("@onelo/core");
+var import_core5 = __toESM(require_dist());
 
 // package.json
 var version = "0.2.0-staging";
@@ -359,7 +556,7 @@ var Onelo = class {
 };
 
 // src/index.ts
-var import_core6 = require("@onelo/core");
+var import_core6 = __toESM(require_dist());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   Onelo,
