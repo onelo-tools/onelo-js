@@ -107,11 +107,11 @@ var require_http = __commonJS({
   "../onelo-core/dist/http.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.httpGet = httpGet2;
-    exports2.httpPost = httpPost2;
+    exports2.httpGet = httpGet3;
+    exports2.httpPost = httpPost3;
     exports2.checkHostedFlowRequired = checkHostedFlowRequired2;
     var types_1 = require_types();
-    async function httpGet2(url, headers) {
+    async function httpGet3(url, headers) {
       let res;
       try {
         res = await fetch(url, { headers });
@@ -121,7 +121,7 @@ var require_http = __commonJS({
       const json = await parseJson(res);
       return { status: res.status, json };
     }
-    async function httpPost2(url, body, headers) {
+    async function httpPost3(url, body, headers) {
       let res;
       try {
         res = await fetch(url, {
@@ -217,8 +217,10 @@ var require_dist = __commonJS({
 // src/index.ts
 var index_exports = {};
 __export(index_exports, {
+  FeatureState: () => FeatureState,
   Onelo: () => Onelo,
-  OneloError: () => import_core6.OneloError
+  OneloError: () => import_core7.OneloError,
+  OneloFeatures: () => OneloFeatures
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -356,7 +358,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.2.0-staging";
+var version = "0.3.0-staging";
 
 // src/auth/auth.ts
 var OneloAuth = class {
@@ -548,17 +550,191 @@ var OneloAuth = class {
   }
 };
 
+// src/features/features.ts
+var import_core6 = __toESM(require_dist());
+var FeatureState = class {
+  constructor(name, status) {
+    this.name = name;
+    this.status = status;
+  }
+  get isEnabled() {
+    return this.status === "enabled" || this.status === "new" || this.status === "beta";
+  }
+  get isDisabled() {
+    return this.status === "disabled";
+  }
+  get isVisible() {
+    return this.status !== "hidden";
+  }
+  get isGreyed() {
+    return this.status === "greyed";
+  }
+  get isUpsell() {
+    return this.status === "upsell";
+  }
+  get isNew() {
+    return this.status === "new";
+  }
+  get isBeta() {
+    return this.status === "beta";
+  }
+  get isComingSoon() {
+    return this.status === "coming_soon";
+  }
+  get badgeLabel() {
+    if (this.status === "new") return "New";
+    if (this.status === "beta") return "Beta";
+    if (this.status === "coming_soon") return "Coming Soon";
+    return null;
+  }
+};
+var POLL_INTERVAL_MS = 6e4;
+var OneloFeatures = class {
+  constructor(apiUrl, publishableKey) {
+    this.cache = /* @__PURE__ */ new Map();
+    this.discoveredNames = /* @__PURE__ */ new Set();
+    this.configVersion = 0;
+    this.pollTimer = null;
+    this.pingDebounce = null;
+    this.currentUserId = null;
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+  }
+  /** Declare feature names upfront — triggers a batch-ping immediately. */
+  declare(names) {
+    for (const name of names) this.discoveredNames.add(name);
+    this._scheduleBatchPing();
+  }
+  /** Returns the current state for a feature. Auto-registers on first call. */
+  feature(name) {
+    const isNew = !this.discoveredNames.has(name);
+    this.discoveredNames.add(name);
+    if (isNew) this._scheduleBatchPing();
+    const status = this.cache.get(name) ?? "hidden";
+    return new FeatureState(name, status);
+  }
+  /** Load features for a user (or anonymous). Called by Onelo orchestrator. */
+  async load(userId) {
+    this.currentUserId = userId;
+    await this._batchPing();
+    await this._resolve(userId);
+    this._startPolling(userId);
+  }
+  /** Stop background polling. Call when SDK is no longer needed. */
+  stopPolling() {
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.pingDebounce !== null) {
+      clearTimeout(this.pingDebounce);
+      this.pingDebounce = null;
+    }
+  }
+  // ── Private ──────────────────────────────────────────────────────────────────
+  _scheduleBatchPing() {
+    if (this.pingDebounce !== null) clearTimeout(this.pingDebounce);
+    this.pingDebounce = setTimeout(() => {
+      this.pingDebounce = null;
+      void this._batchPing();
+    }, 1e3);
+  }
+  async _batchPing() {
+    const names = Array.from(this.discoveredNames);
+    if (names.length === 0) return;
+    try {
+      await (0, import_core6.httpPost)(`${this.apiUrl}/api/sdk/features/batch-ping`, {
+        publishableKey: this.publishableKey,
+        features: names
+      });
+    } catch {
+    }
+  }
+  async _resolve(userId) {
+    try {
+      const body = { publishableKey: this.publishableKey };
+      if (userId) body["userId"] = userId;
+      const { status, json } = await (0, import_core6.httpPost)(`${this.apiUrl}/api/sdk/features/resolve`, body);
+      if (status !== 200) return;
+      const j = json;
+      const features = j["features"];
+      if (features) {
+        this.cache.clear();
+        for (const [name, state] of Object.entries(features)) {
+          this.cache.set(name, state.status);
+        }
+      }
+      if (typeof j["config_version"] === "number") {
+        this.configVersion = j["config_version"];
+      }
+    } catch {
+    }
+  }
+  async _poll(userId) {
+    try {
+      const params = new URLSearchParams({
+        key: this.publishableKey,
+        version: String(this.configVersion)
+      });
+      if (userId) params.set("userId", userId);
+      const { status, json } = await (0, import_core6.httpGet)(
+        `${this.apiUrl}/api/sdk/features/poll?${params.toString()}`
+      );
+      if (status !== 200) return;
+      const j = json;
+      if (j["changed"] === false) return;
+      const features = j["features"];
+      if (features) {
+        this.cache.clear();
+        for (const [name, state] of Object.entries(features)) {
+          this.cache.set(name, state.status);
+        }
+      }
+      if (typeof j["config_version"] === "number") {
+        this.configVersion = j["config_version"];
+      }
+      if (j["discovery_requested"] === true) {
+        await this._batchPing();
+      }
+    } catch {
+    }
+  }
+  _startPolling(userId) {
+    if (this.pollTimer !== null) clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(() => {
+      void this._poll(userId);
+    }, POLL_INTERVAL_MS);
+  }
+};
+
 // src/onelo.ts
 var Onelo = class {
   constructor(config) {
+    this.authUnsubscribe = null;
     this.auth = new OneloAuth(config);
+    this.features = new OneloFeatures(config.apiUrl, config.publishableKey);
+    this.authUnsubscribe = this.auth.onAuthStateChange((session) => {
+      void this.features.load(session?.user.id ?? null);
+    });
+    void this.features.load(null);
+  }
+  /** Only needed when NOT using Onelo Auth (own auth system). */
+  async identify(userId) {
+    await this.features.load(userId);
+  }
+  /** Release background timers. Call when the SDK instance is no longer needed. */
+  destroy() {
+    this.authUnsubscribe?.();
+    this.features.stopPolling();
   }
 };
 
 // src/index.ts
-var import_core6 = __toESM(require_dist());
+var import_core7 = __toESM(require_dist());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  FeatureState,
   Onelo,
-  OneloError
+  OneloError,
+  OneloFeatures
 });

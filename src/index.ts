@@ -1,3 +1,5 @@
 export { Onelo } from './onelo'
+export { OneloFeatures, FeatureState } from './features/features'
+export type { FeatureStatus } from './features/features'
 export { OneloError } from '@onelo/core'
 export type { OneloConfig, OneloSession, OneloUser } from '@onelo/core'
