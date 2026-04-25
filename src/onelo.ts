@@ -13,12 +13,13 @@ export class Onelo {
 
   constructor(config: OneloConfig) {
     this.auth = new OneloAuth(config)
-    this.features = new OneloFeatures(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
+    this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor)
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
 
     // Auth → features identity bridge: reload features when session changes
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {
+      this.monitor.setUserId(session?.user.id ?? null)
       void this.features.load(session?.user.id ?? null)
     })
 

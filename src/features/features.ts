@@ -47,10 +47,12 @@ export class OneloFeatures {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private pingDebounce: ReturnType<typeof setTimeout> | null = null
   private currentUserId: string | null = null
+  private monitor: { _trackFeatureCall: (name: string) => void } | null = null
 
-  constructor(apiUrl: string, publishableKey: string) {
+  constructor(apiUrl: string, publishableKey: string, monitor?: { _trackFeatureCall: (name: string) => void }) {
     this.apiUrl = apiUrl
     this.publishableKey = publishableKey
+    if (monitor) this.monitor = monitor
   }
 
   /** Declare feature names upfront — triggers a batch-ping immediately. */
@@ -64,6 +66,7 @@ export class OneloFeatures {
     const isNew = !this.discoveredNames.has(name)
     this.discoveredNames.add(name)
     if (isNew) this._scheduleBatchPing()
+    this.monitor?._trackFeatureCall(name)
     const status = this.cache.get(name) ?? 'hidden'
     return new FeatureState(name, status)
   }

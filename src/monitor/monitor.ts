@@ -5,34 +5,59 @@ export interface MonitorEventOptions {
   meta?: Record<string, unknown>
 }
 
+type EventSource = 'feature_call' | 'track' | 'event' | 'global_error'
+
 interface BufferedEvent {
   featureName: string
   ok: boolean
   durationMs?: number
   error?: string
   meta?: Record<string, unknown>
+  source: EventSource
+  userId?: string
+  platform: string
 }
+
+const PLATFORM = 'js'
+let _globalHandlersRegistered = false
 
 export class OneloMonitor {
   private readonly publishableKey: string
   private readonly apiUrl: string
   private buffer: BufferedEvent[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
+  private currentUserId: string | null = null
 
   constructor(publishableKey: string, apiUrl: string) {
     this.publishableKey = publishableKey
     this.apiUrl = apiUrl
-    this.flushTimer = setInterval(() => { this.flush() }, 5000)
+    this.flushTimer = setInterval(() => { void this.flush() }, 5000)
+    this._registerGlobalHandlers()
+  }
+
+  setUserId(userId: string | null): void {
+    this.currentUserId = userId
+  }
+
+  _trackFeatureCall(featureName: string): void {
+    this._push(featureName, true, undefined, undefined, undefined, 'feature_call')
+  }
+
+  async track<T>(featureName: string, fn: () => Promise<T> | T): Promise<T> {
+    const start = Date.now()
+    try {
+      const result = await fn()
+      this._push(featureName, true, Date.now() - start, undefined, undefined, 'track')
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this._push(featureName, false, Date.now() - start, message, undefined, 'track')
+      throw err
+    }
   }
 
   event(featureName: string, opts: MonitorEventOptions): void {
-    this.buffer.push({
-      featureName,
-      ok: opts.ok,
-      durationMs: opts.durationMs,
-      error: opts.error,
-      meta: opts.meta,
-    })
+    this._push(featureName, opts.ok, opts.durationMs, opts.error, opts.meta, 'event')
   }
 
   async flush(): Promise<void> {
@@ -55,5 +80,45 @@ export class OneloMonitor {
       this.flushTimer = null
     }
     void this.flush()
+  }
+
+  private _push(
+    featureName: string,
+    ok: boolean,
+    durationMs?: number,
+    error?: string,
+    meta?: Record<string, unknown>,
+    source: EventSource = 'event',
+  ): void {
+    this.buffer.push({
+      featureName,
+      ok,
+      durationMs,
+      error,
+      meta,
+      source,
+      userId: this.currentUserId ?? undefined,
+      platform: PLATFORM,
+    })
+  }
+
+  private _registerGlobalHandlers(): void {
+    if (_globalHandlersRegistered) return
+    _globalHandlersRegistered = true
+
+    const handler = (error: string) => {
+      this._push('unhandled', false, undefined, error, undefined, 'global_error')
+      void this.flush()
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('unhandledrejection', (e) => {
+        const msg = e.reason instanceof Error ? e.reason.message : String(e.reason)
+        handler(msg)
+      })
+      window.addEventListener('error', (e) => {
+        handler(e.message ?? 'Unknown error')
+      })
+    }
   }
 }
