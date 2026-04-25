@@ -342,7 +342,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.6.0-staging";
+var version = "0.7.0-staging";
 
 // src/auth/auth.ts
 var OneloAuth = class {
@@ -710,6 +710,7 @@ var OneloFeatures = class {
 };
 
 // src/monitor/monitor.ts
+var MAX_BUFFER_SIZE = 200;
 var PLATFORM = "js";
 var _globalHandlersRegistered = false;
 var OneloMonitor = class {
@@ -722,7 +723,7 @@ var OneloMonitor = class {
     this.apiUrl = apiUrl;
     this.flushTimer = setInterval(() => {
       void this.flush();
-    }, 5e3);
+    }, 15e3);
     this._registerGlobalHandlers();
   }
   /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
@@ -732,15 +733,15 @@ var OneloMonitor = class {
   _trackFeatureCall(featureName) {
     this._push(featureName, true, void 0, void 0, void 0, "feature_call");
   }
-  async track(featureName, fn) {
+  async track(featureName, fn, options) {
     const start = Date.now();
     try {
       const result = await fn();
-      this._push(featureName, true, Date.now() - start, void 0, void 0, "track");
+      this._push(featureName, true, Date.now() - start, void 0, options?.meta, "track");
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this._push(featureName, false, Date.now() - start, message, void 0, "track");
+      this._push(featureName, false, Date.now() - start, message, options?.meta, "track");
       throw err;
     }
   }
@@ -767,6 +768,7 @@ var OneloMonitor = class {
     void this.flush();
   }
   _push(featureName, ok, durationMs, error, meta, source = "event") {
+    if (this.buffer.length >= MAX_BUFFER_SIZE) this.buffer.shift();
     this.buffer.push({
       featureName,
       ok,
@@ -778,6 +780,9 @@ var OneloMonitor = class {
       sessionId: this.sessionId,
       platform: PLATFORM
     });
+    if (!ok || source === "global_error") {
+      void this.flush();
+    }
   }
   _registerGlobalHandlers() {
     if (_globalHandlersRegistered) return;

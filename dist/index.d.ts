@@ -93,7 +93,9 @@ declare class OneloMonitor {
     /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
     setUserId(userId: string | null): void;
     _trackFeatureCall(featureName: string): void;
-    track<T>(featureName: string, fn: () => Promise<T> | T): Promise<T>;
+    track<T>(featureName: string, fn: () => Promise<T> | T, options?: {
+        meta?: Record<string, unknown>;
+    }): Promise<T>;
     event(featureName: string, opts: MonitorEventOptions): void;
     flush(): Promise<void>;
     destroy(): void;

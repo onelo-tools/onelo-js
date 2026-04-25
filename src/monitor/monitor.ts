@@ -19,6 +19,8 @@ interface BufferedEvent {
   platform: string
 }
 
+const MAX_BUFFER_SIZE = 200
+
 const PLATFORM = 'js'
 let _globalHandlersRegistered = false
 
@@ -33,7 +35,7 @@ export class OneloMonitor {
   constructor(publishableKey: string, apiUrl: string) {
     this.publishableKey = publishableKey
     this.apiUrl = apiUrl
-    this.flushTimer = setInterval(() => { void this.flush() }, 5000)
+    this.flushTimer = setInterval(() => { void this.flush() }, 15000)
     this._registerGlobalHandlers()
   }
 
@@ -46,15 +48,15 @@ export class OneloMonitor {
     this._push(featureName, true, undefined, undefined, undefined, 'feature_call')
   }
 
-  async track<T>(featureName: string, fn: () => Promise<T> | T): Promise<T> {
+  async track<T>(featureName: string, fn: () => Promise<T> | T, options?: { meta?: Record<string, unknown> }): Promise<T> {
     const start = Date.now()
     try {
       const result = await fn()
-      this._push(featureName, true, Date.now() - start, undefined, undefined, 'track')
+      this._push(featureName, true, Date.now() - start, undefined, options?.meta, 'track')
       return result
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      this._push(featureName, false, Date.now() - start, message, undefined, 'track')
+      this._push(featureName, false, Date.now() - start, message, options?.meta, 'track')
       throw err
     }
   }
@@ -93,6 +95,7 @@ export class OneloMonitor {
     meta?: Record<string, unknown>,
     source: EventSource = 'event',
   ): void {
+    if (this.buffer.length >= MAX_BUFFER_SIZE) this.buffer.shift()
     this.buffer.push({
       featureName,
       ok,
@@ -104,6 +107,9 @@ export class OneloMonitor {
       sessionId: this.sessionId,
       platform: PLATFORM,
     })
+    if (!ok || source === 'global_error') {
+      void this.flush()
+    }
   }
 
   private _registerGlobalHandlers(): void {
