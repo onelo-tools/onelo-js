@@ -1,18 +1,21 @@
 import { OneloAuth } from './auth/auth'
 import { OneloFeatures } from './features/features'
 import { OneloMonitor } from './monitor/monitor'
+import { OneloFeedback } from './feedback/feedback'
 import { OneloConfig } from '@onelo/core'
 
 export class Onelo {
   readonly auth: OneloAuth
   readonly features: OneloFeatures
   readonly monitor: OneloMonitor
+  readonly feedback: OneloFeedback
   private authUnsubscribe: (() => void) | null = null
 
   constructor(config: OneloConfig) {
     this.auth = new OneloAuth(config)
     this.features = new OneloFeatures(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
+    this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
 
     // Auth → features identity bridge: reload features when session changes
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {

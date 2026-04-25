@@ -76,6 +76,17 @@ export class OneloFeatures {
     this._startPolling(userId)
   }
 
+  /** Returns names of all features with an active status (enabled, new, or beta). */
+  getActiveFeatures(): string[] {
+    const active: string[] = []
+    for (const [name, status] of this.cache) {
+      if (status === 'enabled' || status === 'new' || status === 'beta') {
+        active.push(name)
+      }
+    }
+    return active
+  }
+
   /** Stop background polling. Call when SDK is no longer needed. */
   stopPolling(): void {
     if (this.pollTimer !== null) {

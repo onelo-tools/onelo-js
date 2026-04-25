@@ -60,6 +60,8 @@ declare class OneloFeatures {
     feature(name: string): FeatureState;
     /** Load features for a user (or anonymous). Called by Onelo orchestrator. */
     load(userId: string | null): Promise<void>;
+    /** Returns names of all features with an active status (enabled, new, or beta). */
+    getActiveFeatures(): string[];
     /** Stop background polling. Call when SDK is no longer needed. */
     stopPolling(): void;
     private _scheduleBatchPing;
@@ -86,10 +88,25 @@ declare class OneloMonitor {
     destroy(): void;
 }
 
+interface FeedbackOptions {
+    type?: 'bug' | 'feature_request' | 'general';
+    area?: string;
+    userId?: string;
+}
+declare class OneloFeedback {
+    private readonly apiUrl;
+    private readonly publishableKey;
+    private readonly getActiveFeatures;
+    constructor(apiUrl: string, publishableKey: string, getActiveFeatures: () => string[]);
+    open(options?: FeedbackOptions): Promise<void>;
+    private _openModal;
+}
+
 declare class Onelo {
     readonly auth: OneloAuth;
     readonly features: OneloFeatures;
     readonly monitor: OneloMonitor;
+    readonly feedback: OneloFeedback;
     private authUnsubscribe;
     constructor(config: OneloConfig);
     /** Only needed when NOT using Onelo Auth (own auth system). */
@@ -98,4 +115,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { FeatureState, type FeatureStatus, type MonitorEventOptions, Onelo, OneloFeatures, OneloMonitor };
+export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloMonitor };
