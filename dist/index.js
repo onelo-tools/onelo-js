@@ -360,7 +360,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.4.0-staging";
+var version = "0.6.0-staging";
 
 // src/auth/auth.ts
 var OneloAuth = class {
@@ -614,7 +614,7 @@ var OneloFeatures = class {
     const isNew = !this.discoveredNames.has(name);
     this.discoveredNames.add(name);
     if (isNew) this._scheduleBatchPing();
-    this.monitor?._trackFeatureCall(name);
+    if (isNew) this.monitor?._trackFeatureCall(name);
     const status = this.cache.get(name) ?? "hidden";
     return new FeatureState(name, status);
   }
@@ -645,6 +645,11 @@ var OneloFeatures = class {
       clearTimeout(this.pingDebounce);
       this.pingDebounce = null;
     }
+  }
+  /** Clears the local feature cache and resets the config version. The next feature() call will re-fetch. */
+  invalidateCache() {
+    this.cache.clear();
+    this.configVersion = 0;
   }
   // ── Private ──────────────────────────────────────────────────────────────────
   _scheduleBatchPing() {
@@ -727,6 +732,7 @@ var PLATFORM = "js";
 var _globalHandlersRegistered = false;
 var OneloMonitor = class {
   constructor(publishableKey, apiUrl) {
+    this.sessionId = crypto.randomUUID();
     this.buffer = [];
     this.flushTimer = null;
     this.currentUserId = null;
@@ -737,6 +743,7 @@ var OneloMonitor = class {
     }, 5e3);
     this._registerGlobalHandlers();
   }
+  /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
   setUserId(userId) {
     this.currentUserId = userId;
   }
@@ -786,6 +793,7 @@ var OneloMonitor = class {
       meta,
       source,
       userId: this.currentUserId ?? void 0,
+      sessionId: this.sessionId,
       platform: PLATFORM
     });
   }

@@ -15,6 +15,7 @@ interface BufferedEvent {
   meta?: Record<string, unknown>
   source: EventSource
   userId?: string
+  sessionId: string
   platform: string
 }
 
@@ -24,6 +25,7 @@ let _globalHandlersRegistered = false
 export class OneloMonitor {
   private readonly publishableKey: string
   private readonly apiUrl: string
+  private readonly sessionId: string = crypto.randomUUID()
   private buffer: BufferedEvent[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private currentUserId: string | null = null
@@ -35,6 +37,7 @@ export class OneloMonitor {
     this._registerGlobalHandlers()
   }
 
+  /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
   setUserId(userId: string | null): void {
     this.currentUserId = userId
   }
@@ -98,6 +101,7 @@ export class OneloMonitor {
       meta,
       source,
       userId: this.currentUserId ?? undefined,
+      sessionId: this.sessionId,
       platform: PLATFORM,
     })
   }

@@ -66,7 +66,7 @@ export class OneloFeatures {
     const isNew = !this.discoveredNames.has(name)
     this.discoveredNames.add(name)
     if (isNew) this._scheduleBatchPing()
-    this.monitor?._trackFeatureCall(name)
+    if (isNew) this.monitor?._trackFeatureCall(name)
     const status = this.cache.get(name) ?? 'hidden'
     return new FeatureState(name, status)
   }
@@ -100,6 +100,12 @@ export class OneloFeatures {
       clearTimeout(this.pingDebounce)
       this.pingDebounce = null
     }
+  }
+
+  /** Clears the local feature cache and resets the config version. The next feature() call will re-fetch. */
+  invalidateCache(): void {
+    this.cache.clear()
+    this.configVersion = 0
   }
 
   // ── Private ──────────────────────────────────────────────────────────────────
