@@ -40,6 +40,16 @@ export class Onelo {
     void this.features.load(null)
   }
 
+  /**
+   * Open the sign-in flow. Automatically routes based on app config:
+   * - waitlist_mode + sdk_redirect_url → opens developer's waitlist/store page
+   * - paywall_enabled → opens hosted store (plan selection + registration)
+   * - otherwise → opens hosted sign-in
+   */
+  async loadAuthView(): Promise<import('@onelo/core').OneloSession | null> {
+    return this.auth.loadAuthView(() => this.paywall.openStore())
+  }
+
   /** Only needed when NOT using Onelo Auth (own auth system). */
   async identify(userId: string): Promise<void> {
     await this.features.load(userId)

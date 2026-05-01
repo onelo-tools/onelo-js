@@ -363,7 +363,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.9.0-staging";
+var version = "0.10.0-staging";
 
 // src/auth/auth.ts
 var OneloAuth = class {
@@ -376,6 +376,11 @@ var OneloAuth = class {
     this.allowCustomBranding = false;
     this.appName = "App";
     this.appLogoUrl = null;
+    this.paywallEnabled = false;
+    this.waitlistMode = false;
+    this.sdkRedirectUrl = null;
+    this.storeUrl = null;
+    this.manageUrl = null;
     if (!config.apiUrl) throw new Error("[Onelo] apiUrl is required");
     if (!config.publishableKey) throw new Error("[Onelo] publishableKey is required");
     this.apiUrl = config.apiUrl;
@@ -399,11 +404,21 @@ var OneloAuth = class {
         tenantId: j["tenant_id"],
         allowCustomBranding: j["allow_custom_branding"] ?? false,
         appName: j["app_name"] ?? null,
-        appLogoUrl: j["app_logo_url"] ?? null
+        appLogoUrl: j["app_logo_url"] ?? null,
+        paywallEnabled: j["paywall_enabled"] ?? false,
+        waitlistMode: j["waitlist_mode"] ?? false,
+        sdkRedirectUrl: j["sdk_redirect_url"] ?? null,
+        storeUrl: j["store_url"] ?? null,
+        manageUrl: j["manage_url"] ?? null
       };
       this.allowCustomBranding = this.resolvedConfig.allowCustomBranding;
       if (this.resolvedConfig.appName) this.appName = this.resolvedConfig.appName;
       this.appLogoUrl = this.resolvedConfig.appLogoUrl;
+      this.paywallEnabled = this.resolvedConfig.paywallEnabled;
+      this.waitlistMode = this.resolvedConfig.waitlistMode;
+      this.sdkRedirectUrl = this.resolvedConfig.sdkRedirectUrl;
+      this.storeUrl = this.resolvedConfig.storeUrl;
+      this.manageUrl = this.resolvedConfig.manageUrl;
       this.isReady = true;
     } catch (e) {
       if (e instanceof import_core5.OneloError && e.code === "invalid_publishable_key") {
@@ -415,9 +430,16 @@ var OneloAuth = class {
     await this.initPromise;
   }
   // ── Hosted flow ─────────────────────────────────────────────────────────────
-  async loadAuthView() {
+  async loadAuthView(openStore) {
     await this.initPromise;
     if (this.isRevoked) throw import_core5.OneloError.invalidKey("Application key has been revoked");
+    if (this.waitlistMode && this.sdkRedirectUrl) {
+      window.open(this.sdkRedirectUrl, "_blank");
+      return null;
+    }
+    if (this.paywallEnabled && openStore) {
+      return openStore();
+    }
     const hostedUrl = await this.getHostedUrl();
     const modal = new AuthModal(this.apiUrl);
     const result = await modal.open(hostedUrl);
@@ -1058,6 +1080,15 @@ var Onelo = class {
       void this.features.load(session?.user.id ?? null);
     });
     void this.features.load(null);
+  }
+  /**
+   * Open the sign-in flow. Automatically routes based on app config:
+   * - waitlist_mode + sdk_redirect_url → opens developer's waitlist/store page
+   * - paywall_enabled → opens hosted store (plan selection + registration)
+   * - otherwise → opens hosted sign-in
+   */
+  async loadAuthView() {
+    return this.auth.loadAuthView(() => this.paywall.openStore());
   }
   /** Only needed when NOT using Onelo Auth (own auth system). */
   async identify(userId) {

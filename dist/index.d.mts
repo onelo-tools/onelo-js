@@ -1,3 +1,4 @@
+import * as _onelo_core from '@onelo/core';
 import { OneloConfig, OneloSession } from '@onelo/core';
 export { OneloConfig, OneloError, OneloSession, OneloUser } from '@onelo/core';
 
@@ -14,10 +15,15 @@ declare class OneloAuth {
     allowCustomBranding: boolean;
     appName: string;
     appLogoUrl: string | null;
+    paywallEnabled: boolean;
+    waitlistMode: boolean;
+    sdkRedirectUrl: string | null;
+    storeUrl: string | null;
+    manageUrl: string | null;
     constructor(config: OneloConfig);
     private initialize;
     whenReady(): Promise<void>;
-    loadAuthView(): Promise<OneloSession | null>;
+    loadAuthView(openStore?: () => Promise<OneloSession | null>): Promise<OneloSession | null>;
     private getHostedUrl;
     signIn(email: string, password: string): Promise<OneloSession>;
     signUp(email: string, password: string): Promise<OneloSession>;
@@ -172,6 +178,13 @@ declare class Onelo {
     readonly waitlist: OneloWaitlist;
     private authUnsubscribe;
     constructor(config: OneloConfig);
+    /**
+     * Open the sign-in flow. Automatically routes based on app config:
+     * - waitlist_mode + sdk_redirect_url → opens developer's waitlist/store page
+     * - paywall_enabled → opens hosted store (plan selection + registration)
+     * - otherwise → opens hosted sign-in
+     */
+    loadAuthView(): Promise<_onelo_core.OneloSession | null>;
     /** Only needed when NOT using Onelo Auth (own auth system). */
     identify(userId: string): Promise<void>;
     /** Release background timers. Call when the SDK instance is no longer needed. */

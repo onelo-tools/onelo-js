@@ -26,6 +26,11 @@ export class OneloAuth {
   allowCustomBranding = false
   appName: string = 'App'
   appLogoUrl: string | null = null
+  paywallEnabled = false
+  waitlistMode = false
+  sdkRedirectUrl: string | null = null
+  storeUrl: string | null = null
+  manageUrl: string | null = null
 
   constructor(config: OneloConfig) {
     if (!config.apiUrl) throw new Error('[Onelo] apiUrl is required')
@@ -53,10 +58,20 @@ export class OneloAuth {
         allowCustomBranding: (j['allow_custom_branding'] as boolean) ?? false,
         appName: (j['app_name'] as string | null) ?? null,
         appLogoUrl: (j['app_logo_url'] as string | null) ?? null,
+        paywallEnabled: (j['paywall_enabled'] as boolean) ?? false,
+        waitlistMode: (j['waitlist_mode'] as boolean) ?? false,
+        sdkRedirectUrl: (j['sdk_redirect_url'] as string | null) ?? null,
+        storeUrl: (j['store_url'] as string | null) ?? null,
+        manageUrl: (j['manage_url'] as string | null) ?? null,
       }
       this.allowCustomBranding = this.resolvedConfig.allowCustomBranding
       if (this.resolvedConfig.appName) this.appName = this.resolvedConfig.appName
       this.appLogoUrl = this.resolvedConfig.appLogoUrl
+      this.paywallEnabled = this.resolvedConfig.paywallEnabled
+      this.waitlistMode = this.resolvedConfig.waitlistMode
+      this.sdkRedirectUrl = this.resolvedConfig.sdkRedirectUrl
+      this.storeUrl = this.resolvedConfig.storeUrl
+      this.manageUrl = this.resolvedConfig.manageUrl
       this.isReady = true
     } catch (e) {
       if (e instanceof OneloError && e.code === 'invalid_publishable_key') {
@@ -71,9 +86,19 @@ export class OneloAuth {
 
   // ── Hosted flow ─────────────────────────────────────────────────────────────
 
-  async loadAuthView(): Promise<OneloSession | null> {
+  async loadAuthView(openStore?: () => Promise<OneloSession | null>): Promise<OneloSession | null> {
     await this.initPromise
     if (this.isRevoked) throw OneloError.invalidKey('Application key has been revoked')
+
+    if (this.waitlistMode && this.sdkRedirectUrl) {
+      window.open(this.sdkRedirectUrl, '_blank')
+      return null
+    }
+
+    if (this.paywallEnabled && openStore) {
+      return openStore()
+    }
+
     const hostedUrl = await this.getHostedUrl()
     const modal = new AuthModal(this.apiUrl)
     const result = await modal.open(hostedUrl)
