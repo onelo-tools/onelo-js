@@ -27,6 +27,10 @@ declare class OneloAuth {
     onAuthStateChange(callback: (session: OneloSession | null) => void): () => void;
     private saveSession;
     private notifyListeners;
+    /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
+    importSession(session: OneloSession): Promise<void>;
+    sendMagicLink(email: string, redirectTo?: string): Promise<void>;
+    sendPasswordReset(email: string, redirectTo?: string): Promise<void>;
 }
 
 type FeatureStatus = 'enabled' | 'disabled' | 'greyed' | 'hidden' | 'upsell' | 'new' | 'beta' | 'coming_soon';
@@ -117,11 +121,55 @@ declare class OneloFeedback {
     private _openModal;
 }
 
+declare class OneloPaywall {
+    private apiUrl;
+    private publishableKey;
+    private getAccessToken;
+    private onSession;
+    constructor(apiUrl: string, publishableKey: string, getAccessToken: () => Promise<string | null>, onSession: (session: OneloSession) => Promise<void>);
+    check(requiredPlan: string, userPlan?: string): boolean;
+    /**
+     * Opens the hosted store page (plan selection + registration + payment).
+     * Returns the session on success, or null if the user cancelled.
+     */
+    openStore(lang?: string): Promise<OneloSession | null>;
+    /**
+     * Opens the hosted manage page (upgrade, cancel, payment method).
+     * Returns the new plan string if the user changed their plan, or null if closed without changes.
+     */
+    openManage(lang?: string): Promise<string | null>;
+    private openManageModal;
+}
+
+declare class OneloForms {
+    private readonly apiUrl;
+    private readonly publishableKey;
+    constructor(apiUrl: string, publishableKey: string);
+    submit(formSlug: string, data: Record<string, unknown>, submitterEmail?: string): Promise<{
+        success: boolean;
+        message?: string;
+    }>;
+}
+
+declare class OneloWaitlist {
+    private readonly apiUrl;
+    private readonly publishableKey;
+    constructor(apiUrl: string, publishableKey: string);
+    join(slug: string | undefined, email: string): Promise<{
+        success: boolean;
+        position?: number;
+        alreadyJoined: boolean;
+    }>;
+}
+
 declare class Onelo {
     readonly auth: OneloAuth;
     readonly features: OneloFeatures;
     readonly monitor: OneloMonitor;
     readonly feedback: OneloFeedback;
+    readonly paywall: OneloPaywall;
+    readonly forms: OneloForms;
+    readonly waitlist: OneloWaitlist;
     private authUnsubscribe;
     constructor(config: OneloConfig);
     /** Only needed when NOT using Onelo Auth (own auth system). */
@@ -130,4 +178,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloMonitor };
+export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist };

@@ -36,7 +36,7 @@ var require_types = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.OneloError = void 0;
-    var OneloError3 = class _OneloError extends Error {
+    var OneloError4 = class _OneloError extends Error {
       constructor(code, message) {
         super(message);
         this.code = code;
@@ -70,7 +70,7 @@ var require_types = __commonJS({
         return new _OneloError("user_revoked", "This user account has been suspended");
       }
     };
-    exports2.OneloError = OneloError3;
+    exports2.OneloError = OneloError4;
   }
 });
 
@@ -107,11 +107,11 @@ var require_http = __commonJS({
   "../onelo-core/dist/http.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.httpGet = httpGet3;
-    exports2.httpPost = httpPost3;
+    exports2.httpGet = httpGet4;
+    exports2.httpPost = httpPost4;
     exports2.checkHostedFlowRequired = checkHostedFlowRequired2;
     var types_1 = require_types();
-    async function httpGet3(url, headers) {
+    async function httpGet4(url, headers) {
       let res;
       try {
         res = await fetch(url, { headers });
@@ -121,7 +121,7 @@ var require_http = __commonJS({
       const json = await parseJson(res);
       return { status: res.status, json };
     }
-    async function httpPost3(url, body, headers) {
+    async function httpPost4(url, body, headers) {
       let res;
       try {
         res = await fetch(url, {
@@ -161,8 +161,8 @@ var require_session = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.TOKEN_KEYS = void 0;
-    exports2.mapSession = mapSession2;
-    function mapSession2(j) {
+    exports2.mapSession = mapSession3;
+    function mapSession3(j) {
       const user = j["user"];
       const appMeta = user?.["app_metadata"] ?? {};
       return {
@@ -219,10 +219,13 @@ var index_exports = {};
 __export(index_exports, {
   FeatureState: () => FeatureState,
   Onelo: () => Onelo,
-  OneloError: () => import_core7.OneloError,
+  OneloError: () => import_core8.OneloError,
   OneloFeatures: () => OneloFeatures,
   OneloFeedback: () => OneloFeedback,
-  OneloMonitor: () => OneloMonitor
+  OneloForms: () => OneloForms,
+  OneloMonitor: () => OneloMonitor,
+  OneloPaywall: () => OneloPaywall,
+  OneloWaitlist: () => OneloWaitlist
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -360,7 +363,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.7.0-staging";
+var version = "0.9.0-staging";
 
 // src/auth/auth.ts
 var OneloAuth = class {
@@ -549,6 +552,24 @@ var OneloAuth = class {
   }
   notifyListeners(session) {
     for (const cb of this.authStateListeners) cb(session);
+  }
+  /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
+  async importSession(session) {
+    await this.saveSession(session);
+  }
+  async sendMagicLink(email, redirectTo) {
+    await this.initPromise;
+    const body = { publishableKey: this.publishableKey, email };
+    if (redirectTo) body.redirectTo = redirectTo;
+    const { status: mlStatus } = await (0, import_core3.httpPost)(`${this.apiUrl}/api/sdk/auth/magic-link`, body, { "X-SDK-Version": version });
+    if (mlStatus >= 400) throw import_core5.OneloError.server(`Magic link request failed: HTTP ${mlStatus}`);
+  }
+  async sendPasswordReset(email, redirectTo) {
+    await this.initPromise;
+    const body = { publishableKey: this.publishableKey, email };
+    if (redirectTo) body.redirectTo = redirectTo;
+    const { status: prStatus } = await (0, import_core3.httpPost)(`${this.apiUrl}/api/sdk/auth/reset-password/request`, body, { "X-SDK-Version": version });
+    if (prStatus >= 400) throw import_core5.OneloError.server(`Password reset request failed: HTTP ${prStatus}`);
   }
 };
 
@@ -865,11 +886,170 @@ var OneloFeedback = class {
   }
 };
 
+// src/paywall/paywall.ts
+var import_core7 = __toESM(require_dist());
+var TIER = { free: 0, pro: 1, business: 2, enterprise: 3 };
+var OneloPaywall = class {
+  constructor(apiUrl, publishableKey, getAccessToken, onSession) {
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+    this.getAccessToken = getAccessToken;
+    this.onSession = onSession;
+  }
+  check(requiredPlan, userPlan = "free") {
+    const req = TIER[requiredPlan];
+    const usr = TIER[userPlan];
+    if (req === void 0 || usr === void 0) return false;
+    return usr >= req;
+  }
+  /**
+   * Opens the hosted store page (plan selection + registration + payment).
+   * Returns the session on success, or null if the user cancelled.
+   */
+  async openStore(lang) {
+    let url = `${this.apiUrl}/api/sdk/paywall/store-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`;
+    if (lang) url += `&lang=${encodeURIComponent(lang)}`;
+    const { status, json } = await (0, import_core7.httpGet)(url, { "X-SDK-Version": version });
+    if (status !== 200) throw import_core7.OneloError.server("Failed to initiate store flow");
+    const j = json;
+    const storeUrl = j["store_url"];
+    if (!storeUrl) throw import_core7.OneloError.server("Invalid store-initiate response");
+    const modal = new AuthModal(this.apiUrl);
+    const result = await modal.open(storeUrl);
+    if (result.type === "cancelled") return null;
+    if (result.type === "error") throw import_core7.OneloError.server(result.message);
+    const { status: cbStatus, json: cbJson } = await (0, import_core7.httpPost)(
+      `${this.apiUrl}/api/sdk/auth/hosted-callback`,
+      { publishableKey: this.publishableKey, code: result.code },
+      { "X-SDK-Version": version }
+    );
+    if (cbStatus !== 200) throw import_core7.OneloError.server("Store hosted-callback failed");
+    const session = (0, import_core7.mapSession)(cbJson);
+    await this.onSession(session);
+    return session;
+  }
+  /**
+   * Opens the hosted manage page (upgrade, cancel, payment method).
+   * Returns the new plan string if the user changed their plan, or null if closed without changes.
+   */
+  async openManage(lang) {
+    const accessToken = await this.getAccessToken();
+    if (!accessToken) throw import_core7.OneloError.server("No active session \u2014 sign in before opening the manage page");
+    let url = `${this.apiUrl}/api/sdk/paywall/manage-initiate?key=${encodeURIComponent(this.publishableKey)}`;
+    if (lang) url += `&lang=${encodeURIComponent(lang)}`;
+    const { status, json } = await (0, import_core7.httpGet)(url, {
+      "X-SDK-Version": version,
+      Authorization: `Bearer ${accessToken}`
+    });
+    if (status !== 200) throw import_core7.OneloError.server("Failed to initiate manage flow");
+    const j = json;
+    const manageUrl = j["manage_url"];
+    if (!manageUrl) throw import_core7.OneloError.server("Invalid manage-initiate response");
+    return this.openManageModal(manageUrl);
+  }
+  // ── Private helpers ─────────────────────────────────────────────────────────
+  openManageModal(manageUrl) {
+    return new Promise((resolve) => {
+      const allowedOrigin = new URL(this.apiUrl).origin;
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;";
+      const container = document.createElement("div");
+      container.style.cssText = "position:relative;width:480px;height:640px;border-radius:12px;overflow:hidden;background:#111;";
+      const iframe = document.createElement("iframe");
+      iframe.src = manageUrl;
+      iframe.style.cssText = "width:100%;height:100%;border:none;";
+      iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups");
+      const cancelBtn = document.createElement("button");
+      cancelBtn.setAttribute("data-onelo-cancel", "");
+      cancelBtn.textContent = "\u2715";
+      cancelBtn.style.cssText = "position:absolute;top:10px;right:12px;background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:18px;cursor:pointer;line-height:1;padding:4px;";
+      container.appendChild(iframe);
+      container.appendChild(cancelBtn);
+      overlay.appendChild(container);
+      document.body.appendChild(overlay);
+      const close = () => {
+        window.removeEventListener("message", messageHandler);
+        overlay.remove();
+      };
+      const messageHandler = (e) => {
+        if (e.origin !== allowedOrigin) return;
+        const data = e.data;
+        if (data?.type === "onelo:plan_changed" && typeof data.plan === "string") {
+          close();
+          resolve(data.plan);
+        } else if (data?.type === "onelo:cancel" || data?.type === "onelo:error") {
+          close();
+          resolve(null);
+        }
+      };
+      window.addEventListener("message", messageHandler);
+      cancelBtn.addEventListener("click", () => {
+        close();
+        resolve(null);
+      });
+    });
+  }
+};
+
+// src/forms/forms.ts
+var OneloForms = class {
+  constructor(apiUrl, publishableKey) {
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+  }
+  async submit(formSlug, data, submitterEmail) {
+    try {
+      const body = { publishableKey: this.publishableKey, formSlug, data };
+      if (submitterEmail) body.submitterEmail = submitterEmail;
+      const res = await fetch(`${this.apiUrl}/api/sdk/forms/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const json = await res.json();
+      return { success: json.success ?? false, message: json.message };
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+};
+
+// src/waitlist/waitlist.ts
+var OneloWaitlist = class {
+  constructor(apiUrl, publishableKey) {
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+  }
+  async join(slug, email) {
+    try {
+      const body = { publishableKey: this.publishableKey, email };
+      if (slug !== void 0) body.slug = slug;
+      const res = await fetch(`${this.apiUrl}/api/sdk/waitlist/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const json = await res.json();
+      return { success: json.success ?? false, position: json.position, alreadyJoined: json.alreadyJoined ?? false };
+    } catch (err) {
+      return { success: false, alreadyJoined: false };
+    }
+  }
+};
+
 // src/onelo.ts
 var Onelo = class {
   constructor(config) {
     this.authUnsubscribe = null;
     this.auth = new OneloAuth(config);
+    this.paywall = new OneloPaywall(
+      config.apiUrl,
+      config.publishableKey,
+      () => this.auth.getSession().then((s) => s?.accessToken ?? null),
+      (session) => this.auth.importSession(session)
+    );
+    this.forms = new OneloForms(config.apiUrl, config.publishableKey);
+    this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey);
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl);
     this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor);
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures());
@@ -892,7 +1072,7 @@ var Onelo = class {
 };
 
 // src/index.ts
-var import_core7 = __toESM(require_dist());
+var import_core8 = __toESM(require_dist());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   FeatureState,
@@ -900,5 +1080,8 @@ var import_core7 = __toESM(require_dist());
   OneloError,
   OneloFeatures,
   OneloFeedback,
-  OneloMonitor
+  OneloForms,
+  OneloMonitor,
+  OneloPaywall,
+  OneloWaitlist
 });

@@ -87,4 +87,34 @@ describe('OneloAuth', () => {
     const session = await auth.getSession()
     expect(session).toBeNull()
   })
+
+  it('sendMagicLink calls /api/sdk/auth/magic-link with email', async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/sdk/config')) return mockResponse(200, CONFIG_RESPONSE)
+      if (url.includes('/api/sdk/auth/magic-link')) return mockResponse(200, { success: true })
+      return mockResponse(404, {})
+    })
+    const auth = new OneloAuth({ publishableKey: 'onelo_pk_test', apiUrl: 'https://api.onelo.tools' })
+    await auth.whenReady()
+    await auth.sendMagicLink('ada@example.com')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/sdk/auth/magic-link'),
+      expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  it('sendPasswordReset calls /api/sdk/auth/reset-password with email', async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/sdk/config')) return mockResponse(200, CONFIG_RESPONSE)
+      if (url.includes('/api/sdk/auth/reset-password')) return mockResponse(200, { success: true })
+      return mockResponse(404, {})
+    })
+    const auth = new OneloAuth({ publishableKey: 'onelo_pk_test', apiUrl: 'https://api.onelo.tools' })
+    await auth.whenReady()
+    await auth.sendPasswordReset('ada@example.com')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/sdk/auth/reset-password'),
+      expect.objectContaining({ method: 'POST' })
+    )
+  })
 })

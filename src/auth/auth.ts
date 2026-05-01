@@ -211,4 +211,25 @@ export class OneloAuth {
   private notifyListeners(session: OneloSession | null): void {
     for (const cb of this.authStateListeners) cb(session)
   }
+
+  /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
+  async importSession(session: OneloSession): Promise<void> {
+    await this.saveSession(session)
+  }
+
+  async sendMagicLink(email: string, redirectTo?: string): Promise<void> {
+    await this.initPromise
+    const body: Record<string, unknown> = { publishableKey: this.publishableKey, email }
+    if (redirectTo) body.redirectTo = redirectTo
+    const { status: mlStatus } = await httpPost(`${this.apiUrl}/api/sdk/auth/magic-link`, body, { 'X-SDK-Version': SDK_VERSION })
+    if (mlStatus >= 400) throw OneloError.server(`Magic link request failed: HTTP ${mlStatus}`)
+  }
+
+  async sendPasswordReset(email: string, redirectTo?: string): Promise<void> {
+    await this.initPromise
+    const body: Record<string, unknown> = { publishableKey: this.publishableKey, email }
+    if (redirectTo) body.redirectTo = redirectTo
+    const { status: prStatus } = await httpPost(`${this.apiUrl}/api/sdk/auth/reset-password/request`, body, { 'X-SDK-Version': SDK_VERSION })
+    if (prStatus >= 400) throw OneloError.server(`Password reset request failed: HTTP ${prStatus}`)
+  }
 }

@@ -2,6 +2,9 @@ import { OneloAuth } from './auth/auth'
 import { OneloFeatures } from './features/features'
 import { OneloMonitor } from './monitor/monitor'
 import { OneloFeedback } from './feedback/feedback'
+import { OneloPaywall } from './paywall/paywall'
+import { OneloForms } from './forms/forms'
+import { OneloWaitlist } from './waitlist/waitlist'
 import { OneloConfig } from '@onelo/core'
 
 export class Onelo {
@@ -9,10 +12,21 @@ export class Onelo {
   readonly features: OneloFeatures
   readonly monitor: OneloMonitor
   readonly feedback: OneloFeedback
+  readonly paywall: OneloPaywall
+  readonly forms: OneloForms
+  readonly waitlist: OneloWaitlist
   private authUnsubscribe: (() => void) | null = null
 
   constructor(config: OneloConfig) {
     this.auth = new OneloAuth(config)
+    this.paywall = new OneloPaywall(
+      config.apiUrl,
+      config.publishableKey,
+      () => this.auth.getSession().then(s => s?.accessToken ?? null),
+      (session) => this.auth.importSession(session),
+    )
+    this.forms = new OneloForms(config.apiUrl, config.publishableKey)
+    this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
     this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor)
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
