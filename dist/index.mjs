@@ -342,13 +342,14 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.10.0-staging";
+var version = "0.10.1-staging";
 
 // src/auth/auth.ts
-var OneloAuth = class {
+var _OneloAuth = class _OneloAuth {
   constructor(config) {
     this.pkceVerifier = null;
     this.resolvedConfig = null;
+    this.heartbeatTimer = null;
     this.authStateListeners = [];
     this.isReady = false;
     this.isRevoked = false;
@@ -489,6 +490,7 @@ var OneloAuth = class {
   }
   // ── Session management ──────────────────────────────────────────────────────
   async signOut() {
+    this.stopHeartbeat();
     await this.storage.clear();
     this.notifyListeners(null);
   }
@@ -542,6 +544,29 @@ var OneloAuth = class {
     };
   }
   // ── Helpers ─────────────────────────────────────────────────────────────────
+  startHeartbeat(accessToken) {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(async () => {
+      const session = await this.getSession();
+      if (!session) {
+        this.stopHeartbeat();
+        return;
+      }
+      try {
+        await fetch(`${this.apiUrl}/api/sdk/presence/heartbeat`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${session.accessToken}` }
+        });
+      } catch {
+      }
+    }, _OneloAuth.HEARTBEAT_MS);
+  }
+  stopHeartbeat() {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
   async saveSession(session) {
     await Promise.all([
       this.storage.set(import_core.TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
@@ -550,6 +575,7 @@ var OneloAuth = class {
       this.storage.set(import_core.TOKEN_KEYS.USER_JSON, JSON.stringify(session.user))
     ]);
     this.notifyListeners(session);
+    this.startHeartbeat(session.accessToken);
   }
   notifyListeners(session) {
     for (const cb of this.authStateListeners) cb(session);
@@ -573,6 +599,8 @@ var OneloAuth = class {
     if (prStatus >= 400) throw import_core5.OneloError.server(`Password reset request failed: HTTP ${prStatus}`);
   }
 };
+_OneloAuth.HEARTBEAT_MS = 13 * 60 * 1e3;
+var OneloAuth = _OneloAuth;
 
 // src/features/features.ts
 var import_core6 = __toESM(require_dist());

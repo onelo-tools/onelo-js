@@ -18,6 +18,8 @@ export class OneloAuth {
   private publishableKey: string
   private pkceVerifier: string | null = null
   private resolvedConfig: ResolvedSDKConfig | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private static readonly HEARTBEAT_MS = 13 * 60 * 1000
   private initPromise: Promise<void>
   private authStateListeners: Array<(session: OneloSession | null) => void> = []
 
@@ -177,6 +179,7 @@ export class OneloAuth {
   // ── Session management ──────────────────────────────────────────────────────
 
   async signOut(): Promise<void> {
+    this.stopHeartbeat()
     await this.storage.clear()
     this.notifyListeners(null)
   }
@@ -223,6 +226,29 @@ export class OneloAuth {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
+  private startHeartbeat(accessToken: string): void {
+    this.stopHeartbeat()
+    this.heartbeatTimer = setInterval(async () => {
+      const session = await this.getSession()
+      if (!session) { this.stopHeartbeat(); return }
+      try {
+        await fetch(`${this.apiUrl}/api/sdk/presence/heartbeat`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.accessToken}` },
+        })
+      } catch {
+        // fire-and-forget
+      }
+    }, OneloAuth.HEARTBEAT_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+  }
+
   private async saveSession(session: OneloSession): Promise<void> {
     await Promise.all([
       this.storage.set(TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
@@ -231,6 +257,7 @@ export class OneloAuth {
       this.storage.set(TOKEN_KEYS.USER_JSON, JSON.stringify(session.user)),
     ])
     this.notifyListeners(session)
+    this.startHeartbeat(session.accessToken)
   }
 
   private notifyListeners(session: OneloSession | null): void {

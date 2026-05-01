@@ -8,6 +8,8 @@ declare class OneloAuth {
     private publishableKey;
     private pkceVerifier;
     private resolvedConfig;
+    private heartbeatTimer;
+    private static readonly HEARTBEAT_MS;
     private initPromise;
     private authStateListeners;
     isReady: boolean;
@@ -31,6 +33,8 @@ declare class OneloAuth {
     getSession(): Promise<OneloSession | null>;
     refreshSession(): Promise<OneloSession | null>;
     onAuthStateChange(callback: (session: OneloSession | null) => void): () => void;
+    private startHeartbeat;
+    private stopHeartbeat;
     private saveSession;
     private notifyListeners;
     /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
