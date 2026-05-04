@@ -28,7 +28,9 @@ export class Onelo {
     this.forms = new OneloForms(config.apiUrl, config.publishableKey)
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
-    this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor)
+    this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor, {
+      suppressIdentifyWarning: config.suppressIdentifyWarning ?? false,
+    })
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
 
     // Auth → features identity bridge: reload features when session changes

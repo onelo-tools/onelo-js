@@ -342,7 +342,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.10.1-staging";
+var version = "0.11.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -642,7 +642,7 @@ var FeatureState = class {
 };
 var POLL_INTERVAL_MS = 6e4;
 var OneloFeatures = class {
-  constructor(apiUrl, publishableKey, monitor) {
+  constructor(apiUrl, publishableKey, monitor, options) {
     this.cache = /* @__PURE__ */ new Map();
     this.discoveredNames = /* @__PURE__ */ new Set();
     this.configVersion = 0;
@@ -650,9 +650,11 @@ var OneloFeatures = class {
     this.pingDebounce = null;
     this.currentUserId = null;
     this.monitor = null;
+    this.anonymousWarningLogged = false;
     this.apiUrl = apiUrl;
     this.publishableKey = publishableKey;
     if (monitor) this.monitor = monitor;
+    this.suppressIdentifyWarning = options?.suppressIdentifyWarning ?? false;
   }
   /** Declare feature names upfront — triggers a batch-ping immediately. */
   declare(names) {
@@ -737,8 +739,27 @@ var OneloFeatures = class {
       if (typeof j["config_version"] === "number") {
         this.configVersion = j["config_version"];
       }
+      this._maybeWarnAnonymous(j);
     } catch {
     }
+  }
+  /**
+   * Logs a one-time warning when the backend reports anonymous mode (no userId)
+   * AND at least one targeted feature was hidden purely because of it. Helps
+   * developers using their own auth system catch missing identify() calls.
+   * Suppressed via OneloConfig.suppressIdentifyWarning.
+   */
+  _maybeWarnAnonymous(response) {
+    if (this.suppressIdentifyWarning || this.anonymousWarningLogged) return;
+    if (response["anonymous"] !== true) return;
+    const misses = typeof response["targeting_misses"] === "number" ? response["targeting_misses"] : 0;
+    if (misses <= 0) return;
+    this.anonymousWarningLogged = true;
+    console.warn(
+      `[Onelo] ${misses} feature(s) hidden because no user is identified.
+If you handle auth yourself, call onelo.identify(userId) after login so per-user/per-plan targeting can apply.
+If your app is intentionally anonymous, pass suppressIdentifyWarning: true in OneloConfig to silence this.`
+    );
   }
   async _poll(userId) {
     try {
@@ -1080,7 +1101,9 @@ var Onelo = class {
     this.forms = new OneloForms(config.apiUrl, config.publishableKey);
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey);
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl);
-    this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor);
+    this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor, {
+      suppressIdentifyWarning: config.suppressIdentifyWarning ?? false
+    });
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures());
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {
       this.monitor.setUserId(session?.user.id ?? null);

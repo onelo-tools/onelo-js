@@ -38,6 +38,11 @@ export class FeatureState {
 
 const POLL_INTERVAL_MS = 60_000
 
+export interface OneloFeaturesOptions {
+  /** Suppress the anonymous-mode identify() warning. See OneloConfig.suppressIdentifyWarning. */
+  suppressIdentifyWarning?: boolean
+}
+
 export class OneloFeatures {
   private readonly apiUrl: string
   private readonly publishableKey: string
@@ -48,11 +53,19 @@ export class OneloFeatures {
   private pingDebounce: ReturnType<typeof setTimeout> | null = null
   private currentUserId: string | null = null
   private monitor: { _trackFeatureCall: (name: string) => void } | null = null
+  private suppressIdentifyWarning: boolean
+  private anonymousWarningLogged = false
 
-  constructor(apiUrl: string, publishableKey: string, monitor?: { _trackFeatureCall: (name: string) => void }) {
+  constructor(
+    apiUrl: string,
+    publishableKey: string,
+    monitor?: { _trackFeatureCall: (name: string) => void },
+    options?: OneloFeaturesOptions,
+  ) {
     this.apiUrl = apiUrl
     this.publishableKey = publishableKey
     if (monitor) this.monitor = monitor
+    this.suppressIdentifyWarning = options?.suppressIdentifyWarning ?? false
   }
 
   /** Declare feature names upfront — triggers a batch-ping immediately. */
@@ -148,9 +161,30 @@ export class OneloFeatures {
       if (typeof j['config_version'] === 'number') {
         this.configVersion = j['config_version'] as number
       }
+      this._maybeWarnAnonymous(j)
     } catch {
       // keep existing cache
     }
+  }
+
+  /**
+   * Logs a one-time warning when the backend reports anonymous mode (no userId)
+   * AND at least one targeted feature was hidden purely because of it. Helps
+   * developers using their own auth system catch missing identify() calls.
+   * Suppressed via OneloConfig.suppressIdentifyWarning.
+   */
+  private _maybeWarnAnonymous(response: Record<string, unknown>): void {
+    if (this.suppressIdentifyWarning || this.anonymousWarningLogged) return
+    if (response['anonymous'] !== true) return
+    const misses = typeof response['targeting_misses'] === 'number' ? (response['targeting_misses'] as number) : 0
+    if (misses <= 0) return
+    this.anonymousWarningLogged = true
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[Onelo] ${misses} feature(s) hidden because no user is identified.\n` +
+      `If you handle auth yourself, call onelo.identify(userId) after login so per-user/per-plan targeting can apply.\n` +
+      `If your app is intentionally anonymous, pass suppressIdentifyWarning: true in OneloConfig to silence this.`
+    )
   }
 
   private async _poll(userId: string | null): Promise<void> {

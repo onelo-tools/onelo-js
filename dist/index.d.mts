@@ -58,6 +58,10 @@ declare class FeatureState {
     get isComingSoon(): boolean;
     get badgeLabel(): string | null;
 }
+interface OneloFeaturesOptions {
+    /** Suppress the anonymous-mode identify() warning. See OneloConfig.suppressIdentifyWarning. */
+    suppressIdentifyWarning?: boolean;
+}
 declare class OneloFeatures {
     private readonly apiUrl;
     private readonly publishableKey;
@@ -68,9 +72,11 @@ declare class OneloFeatures {
     private pingDebounce;
     private currentUserId;
     private monitor;
+    private suppressIdentifyWarning;
+    private anonymousWarningLogged;
     constructor(apiUrl: string, publishableKey: string, monitor?: {
         _trackFeatureCall: (name: string) => void;
-    });
+    }, options?: OneloFeaturesOptions);
     /** Declare feature names upfront — triggers a batch-ping immediately. */
     declare(names: string[]): void;
     /** Returns the current state for a feature. Auto-registers on first call. */
@@ -86,6 +92,13 @@ declare class OneloFeatures {
     private _scheduleBatchPing;
     private _batchPing;
     private _resolve;
+    /**
+     * Logs a one-time warning when the backend reports anonymous mode (no userId)
+     * AND at least one targeted feature was hidden purely because of it. Helps
+     * developers using their own auth system catch missing identify() calls.
+     * Suppressed via OneloConfig.suppressIdentifyWarning.
+     */
+    private _maybeWarnAnonymous;
     private _poll;
     private _startPolling;
 }
