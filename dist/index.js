@@ -107,11 +107,11 @@ var require_http = __commonJS({
   "../onelo-core/dist/http.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.httpGet = httpGet4;
+    exports2.httpGet = httpGet3;
     exports2.httpPost = httpPost4;
     exports2.checkHostedFlowRequired = checkHostedFlowRequired2;
     var types_1 = require_types();
-    async function httpGet4(url, headers) {
+    async function httpGet3(url, headers) {
       let res;
       try {
         res = await fetch(url, { headers });
@@ -661,17 +661,22 @@ var FeatureState = class {
     return null;
   }
 };
-var POLL_INTERVAL_MS = 6e4;
+var RECONNECT_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 3e4];
+var CACHE_KEY_PREFIX = "onelo_features_";
 var OneloFeatures = class {
   constructor(apiUrl, publishableKey, monitor, options) {
     this.cache = /* @__PURE__ */ new Map();
     this.discoveredNames = /* @__PURE__ */ new Set();
     this.configVersion = 0;
-    this.pollTimer = null;
     this.pingDebounce = null;
     this.currentUserId = null;
     this.monitor = null;
     this.anonymousWarningLogged = false;
+    // SSE — primary channel for live deploys. Replaces the legacy 60s poll.
+    this.sseSource = null;
+    this.reconnectAttempts = 0;
+    this.reconnectTimer = null;
+    this.destroyed = false;
     this.apiUrl = apiUrl;
     this.publishableKey = publishableKey;
     if (monitor) this.monitor = monitor;
@@ -691,12 +696,18 @@ var OneloFeatures = class {
     const status = this.cache.get(name) ?? "hidden";
     return new FeatureState(name, status);
   }
-  /** Load features for a user (or anonymous). Called by Onelo orchestrator. */
+  /** Load features for a user (or anonymous). Called by Onelo orchestrator.
+   * Restores cache for instant UI, then opens an SSE channel that delivers
+   * live updates whenever an admin clicks Deploy in the dashboard. */
   async load(userId) {
     this.currentUserId = userId;
+    this._loadCache(userId);
     await this._batchPing();
-    await this._resolve(userId);
-    this._startPolling(userId);
+    if (this._supportsSse()) {
+      this._connectSSE(userId);
+    } else {
+      await this._resolve(userId);
+    }
   }
   /** Returns names of all features with an active status (enabled, new, or beta). */
   getActiveFeatures() {
@@ -708,11 +719,15 @@ var OneloFeatures = class {
     }
     return active;
   }
-  /** Stop background polling. Call when SDK is no longer needed. */
+  /** Tear down the SSE connection. Call when the SDK instance is no longer needed
+   * (e.g. on app shutdown). Kept named `stopPolling` for back-compat with the
+   * old polling-based API. */
   stopPolling() {
-    if (this.pollTimer !== null) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
+    this.destroyed = true;
+    this._closeSse();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
     if (this.pingDebounce !== null) {
       clearTimeout(this.pingDebounce);
@@ -723,6 +738,7 @@ var OneloFeatures = class {
   invalidateCache() {
     this.cache.clear();
     this.configVersion = 0;
+    this._writeCache();
   }
   // ── Private ──────────────────────────────────────────────────────────────────
   _scheduleBatchPing() {
@@ -752,13 +768,7 @@ var OneloFeatures = class {
       const j = json;
       const features = j["features"];
       if (features) {
-        this.cache.clear();
-        for (const [name, state] of Object.entries(features)) {
-          this.cache.set(name, state.status);
-        }
-      }
-      if (typeof j["config_version"] === "number") {
-        this.configVersion = j["config_version"];
+        this._applySnapshot(typeof j["config_version"] === "number" ? j["config_version"] : this.configVersion, features);
       }
       this._maybeWarnAnonymous(j);
     } catch {
@@ -782,40 +792,112 @@ If you handle auth yourself, call onelo.identify(userId) after login so per-user
 If your app is intentionally anonymous, pass suppressIdentifyWarning: true in OneloConfig to silence this.`
     );
   }
-  async _poll(userId) {
+  // ── SSE ──────────────────────────────────────────────────────────────────────
+  _supportsSse() {
+    return typeof EventSource !== "undefined";
+  }
+  _connectSSE(userId) {
+    if (this.destroyed) return;
+    this._closeSse();
+    const params = new URLSearchParams({
+      key: this.publishableKey,
+      since_version: String(this.configVersion)
+    });
+    if (userId) params.set("userId", userId);
+    const url = `${this.apiUrl}/api/sdk/features/stream?${params.toString()}`;
+    let sse;
     try {
-      const params = new URLSearchParams({
-        key: this.publishableKey,
-        version: String(this.configVersion)
-      });
-      if (userId) params.set("userId", userId);
-      const { status, json } = await (0, import_core6.httpGet)(
-        `${this.apiUrl}/api/sdk/features/poll?${params.toString()}`
-      );
-      if (status !== 200) return;
-      const j = json;
-      if (j["changed"] === false) return;
-      const features = j["features"];
-      if (features) {
-        this.cache.clear();
-        for (const [name, state] of Object.entries(features)) {
-          this.cache.set(name, state.status);
+      sse = new EventSource(url);
+    } catch {
+      this._scheduleReconnect(userId);
+      return;
+    }
+    this.sseSource = sse;
+    sse.addEventListener("connected", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.features) {
+          this._applySnapshot(data.config_version ?? this.configVersion, data.features);
         }
+        this.reconnectAttempts = 0;
+      } catch {
       }
-      if (typeof j["config_version"] === "number") {
-        this.configVersion = j["config_version"];
+    });
+    sse.addEventListener("up_to_date", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (typeof data.config_version === "number") this.configVersion = data.config_version;
+        this.reconnectAttempts = 0;
+      } catch {
       }
-      if (j["discovery_requested"] === true) {
-        await this._batchPing();
+    });
+    sse.addEventListener("features_updated", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.features) {
+          this._applySnapshot(data.config_version ?? this.configVersion, data.features);
+        }
+      } catch {
+      }
+    });
+    sse.onerror = () => {
+      this._closeSse();
+      if (this.destroyed) return;
+      this._scheduleReconnect(userId);
+    };
+  }
+  _scheduleReconnect(userId) {
+    if (this.destroyed) return;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this._connectSSE(userId);
+    }, delay);
+  }
+  _closeSse() {
+    if (this.sseSource !== null) {
+      this.sseSource.close();
+      this.sseSource = null;
+    }
+  }
+  // ── Cache ───────────────────────────────────────────────────────────────────
+  _cacheKey(userId) {
+    return `${CACHE_KEY_PREFIX}${this.publishableKey}_${userId ?? "anon"}`;
+  }
+  _loadCache(userId) {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(this._cacheKey(userId));
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.configVersion !== "number" || !parsed.features) return;
+      this.configVersion = parsed.configVersion;
+      this.cache.clear();
+      for (const [name, status] of Object.entries(parsed.features)) {
+        this.cache.set(name, status);
       }
     } catch {
     }
   }
-  _startPolling(userId) {
-    if (this.pollTimer !== null) clearInterval(this.pollTimer);
-    this.pollTimer = setInterval(() => {
-      void this._poll(userId);
-    }, POLL_INTERVAL_MS);
+  _writeCache() {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const features = {};
+      for (const [name, status] of this.cache) features[name] = status;
+      const snapshot = { configVersion: this.configVersion, features };
+      localStorage.setItem(this._cacheKey(this.currentUserId), JSON.stringify(snapshot));
+    } catch {
+    }
+  }
+  _applySnapshot(version2, features) {
+    this.configVersion = version2;
+    this.cache.clear();
+    for (const [name, state] of Object.entries(features)) {
+      this.cache.set(name, state.status);
+    }
+    this._writeCache();
   }
 };
 

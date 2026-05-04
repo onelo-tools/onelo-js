@@ -1,4 +1,4 @@
-import { httpPost, httpGet } from '@onelo/core'
+import { httpPost } from '@onelo/core'
 
 export type FeatureStatus =
   | 'enabled'
@@ -36,11 +36,19 @@ export class FeatureState {
   }
 }
 
-const POLL_INTERVAL_MS = 60_000
+// SSE reconnect schedule. The bounded backoff prevents tight loops on hard
+// network failures while keeping the typical "WiFi blip" recovery near-instant.
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
+const CACHE_KEY_PREFIX = 'onelo_features_'
 
 export interface OneloFeaturesOptions {
   /** Suppress the anonymous-mode identify() warning. See OneloConfig.suppressIdentifyWarning. */
   suppressIdentifyWarning?: boolean
+}
+
+interface CachedSnapshot {
+  configVersion: number
+  features: Record<string, FeatureStatus>
 }
 
 export class OneloFeatures {
@@ -49,12 +57,16 @@ export class OneloFeatures {
   private cache: Map<string, FeatureStatus> = new Map()
   private discoveredNames: Set<string> = new Set()
   private configVersion = 0
-  private pollTimer: ReturnType<typeof setInterval> | null = null
   private pingDebounce: ReturnType<typeof setTimeout> | null = null
   private currentUserId: string | null = null
   private monitor: { _trackFeatureCall: (name: string) => void } | null = null
   private suppressIdentifyWarning: boolean
   private anonymousWarningLogged = false
+  // SSE — primary channel for live deploys. Replaces the legacy 60s poll.
+  private sseSource: EventSource | null = null
+  private reconnectAttempts = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private destroyed = false
 
   constructor(
     apiUrl: string,
@@ -84,12 +96,21 @@ export class OneloFeatures {
     return new FeatureState(name, status)
   }
 
-  /** Load features for a user (or anonymous). Called by Onelo orchestrator. */
+  /** Load features for a user (or anonymous). Called by Onelo orchestrator.
+   * Restores cache for instant UI, then opens an SSE channel that delivers
+   * live updates whenever an admin clicks Deploy in the dashboard. */
   async load(userId: string | null): Promise<void> {
     this.currentUserId = userId
+    this._loadCache(userId)
     await this._batchPing()
-    await this._resolve(userId)
-    this._startPolling(userId)
+    if (this._supportsSse()) {
+      this._connectSSE(userId)
+    } else {
+      // Environments without EventSource (some SSR contexts) fall back to a
+      // single one-shot resolve — no real-time updates, but at least correct
+      // initial state. Browsers and modern Node always have EventSource.
+      await this._resolve(userId)
+    }
   }
 
   /** Returns names of all features with an active status (enabled, new, or beta). */
@@ -103,11 +124,15 @@ export class OneloFeatures {
     return active
   }
 
-  /** Stop background polling. Call when SDK is no longer needed. */
+  /** Tear down the SSE connection. Call when the SDK instance is no longer needed
+   * (e.g. on app shutdown). Kept named `stopPolling` for back-compat with the
+   * old polling-based API. */
   stopPolling(): void {
-    if (this.pollTimer !== null) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
+    this.destroyed = true
+    this._closeSse()
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
     }
     if (this.pingDebounce !== null) {
       clearTimeout(this.pingDebounce)
@@ -119,6 +144,7 @@ export class OneloFeatures {
   invalidateCache(): void {
     this.cache.clear()
     this.configVersion = 0
+    this._writeCache()
   }
 
   // ── Private ──────────────────────────────────────────────────────────────────
@@ -153,13 +179,7 @@ export class OneloFeatures {
       const j = json as Record<string, unknown>
       const features = j['features'] as Record<string, { status: string }> | undefined
       if (features) {
-        this.cache.clear()
-        for (const [name, state] of Object.entries(features)) {
-          this.cache.set(name, state.status as FeatureStatus)
-        }
-      }
-      if (typeof j['config_version'] === 'number') {
-        this.configVersion = j['config_version'] as number
+        this._applySnapshot(typeof j['config_version'] === 'number' ? (j['config_version'] as number) : this.configVersion, features)
       }
       this._maybeWarnAnonymous(j)
     } catch {
@@ -187,41 +207,138 @@ export class OneloFeatures {
     )
   }
 
-  private async _poll(userId: string | null): Promise<void> {
+  // ── SSE ──────────────────────────────────────────────────────────────────────
+
+  private _supportsSse(): boolean {
+    return typeof EventSource !== 'undefined'
+  }
+
+  private _connectSSE(userId: string | null): void {
+    if (this.destroyed) return
+    this._closeSse()
+
+    const params = new URLSearchParams({
+      key: this.publishableKey,
+      since_version: String(this.configVersion),
+    })
+    if (userId) params.set('userId', userId)
+    const url = `${this.apiUrl}/api/sdk/features/stream?${params.toString()}`
+    let sse: EventSource
     try {
-      const params = new URLSearchParams({
-        key: this.publishableKey,
-        version: String(this.configVersion),
-      })
-      if (userId) params.set('userId', userId)
-      const { status, json } = await httpGet(
-        `${this.apiUrl}/api/sdk/features/poll?${params.toString()}`
-      )
-      if (status !== 200) return
-      const j = json as Record<string, unknown>
-      if (j['changed'] === false) return
-      const features = j['features'] as Record<string, { status: string }> | undefined
-      if (features) {
-        this.cache.clear()
-        for (const [name, state] of Object.entries(features)) {
-          this.cache.set(name, state.status as FeatureStatus)
-        }
-      }
-      if (typeof j['config_version'] === 'number') {
-        this.configVersion = j['config_version'] as number
-      }
-      if (j['discovery_requested'] === true) {
-        await this._batchPing()
-      }
+      sse = new EventSource(url)
     } catch {
-      // ignore — will retry on next tick
+      // Construction can throw on invalid URLs; treat as a transient error.
+      this._scheduleReconnect(userId)
+      return
+    }
+    this.sseSource = sse
+
+    // Server sends `connected` only when current_version > since_version.
+    sse.addEventListener('connected', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { config_version?: number; features?: Record<string, { status: string }> }
+        if (data.features) {
+          this._applySnapshot(data.config_version ?? this.configVersion, data.features)
+        }
+        this.reconnectAttempts = 0
+      } catch {
+        // ignore malformed payloads
+      }
+    })
+
+    // Server sends `up_to_date` when client's since_version matches current.
+    // No payload needed beyond confirmation; cache stays as-is.
+    sse.addEventListener('up_to_date', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { config_version?: number }
+        if (typeof data.config_version === 'number') this.configVersion = data.config_version
+        this.reconnectAttempts = 0
+      } catch {
+        // ignore
+      }
+    })
+
+    // Server pushes this whenever an admin clicks Deploy.
+    sse.addEventListener('features_updated', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { config_version?: number; features?: Record<string, { status: string }> }
+        if (data.features) {
+          this._applySnapshot(data.config_version ?? this.configVersion, data.features)
+        }
+      } catch {
+        // ignore
+      }
+    })
+
+    sse.onerror = () => {
+      // EventSource auto-retries internally for some error classes, but we
+      // close + manually reconnect to apply our exponential backoff. This
+      // also avoids the browser's default 3s retry in tight failure loops.
+      this._closeSse()
+      if (this.destroyed) return
+      this._scheduleReconnect(userId)
     }
   }
 
-  private _startPolling(userId: string | null): void {
-    if (this.pollTimer !== null) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => {
-      void this._poll(userId)
-    }, POLL_INTERVAL_MS)
+  private _scheduleReconnect(userId: string | null): void {
+    if (this.destroyed) return
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer)
+    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)]
+    this.reconnectAttempts++
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this._connectSSE(userId)
+    }, delay)
+  }
+
+  private _closeSse(): void {
+    if (this.sseSource !== null) {
+      this.sseSource.close()
+      this.sseSource = null
+    }
+  }
+
+  // ── Cache ───────────────────────────────────────────────────────────────────
+
+  private _cacheKey(userId: string | null): string {
+    return `${CACHE_KEY_PREFIX}${this.publishableKey}_${userId ?? 'anon'}`
+  }
+
+  private _loadCache(userId: string | null): void {
+    if (typeof localStorage === 'undefined') return
+    try {
+      const raw = localStorage.getItem(this._cacheKey(userId))
+      if (!raw) return
+      const parsed = JSON.parse(raw) as CachedSnapshot
+      if (typeof parsed.configVersion !== 'number' || !parsed.features) return
+      this.configVersion = parsed.configVersion
+      this.cache.clear()
+      for (const [name, status] of Object.entries(parsed.features)) {
+        this.cache.set(name, status as FeatureStatus)
+      }
+    } catch {
+      // corrupted cache — ignore
+    }
+  }
+
+  private _writeCache(): void {
+    if (typeof localStorage === 'undefined') return
+    try {
+      const features: Record<string, FeatureStatus> = {}
+      for (const [name, status] of this.cache) features[name] = status
+      const snapshot: CachedSnapshot = { configVersion: this.configVersion, features }
+      localStorage.setItem(this._cacheKey(this.currentUserId), JSON.stringify(snapshot))
+    } catch {
+      // localStorage quota / private mode — ignore
+    }
+  }
+
+  private _applySnapshot(version: number, features: Record<string, { status: string }>): void {
+    this.configVersion = version
+    this.cache.clear()
+    for (const [name, state] of Object.entries(features)) {
+      this.cache.set(name, state.status as FeatureStatus)
+    }
+    this._writeCache()
   }
 }

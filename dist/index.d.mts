@@ -68,12 +68,15 @@ declare class OneloFeatures {
     private cache;
     private discoveredNames;
     private configVersion;
-    private pollTimer;
     private pingDebounce;
     private currentUserId;
     private monitor;
     private suppressIdentifyWarning;
     private anonymousWarningLogged;
+    private sseSource;
+    private reconnectAttempts;
+    private reconnectTimer;
+    private destroyed;
     constructor(apiUrl: string, publishableKey: string, monitor?: {
         _trackFeatureCall: (name: string) => void;
     }, options?: OneloFeaturesOptions);
@@ -81,11 +84,15 @@ declare class OneloFeatures {
     declare(names: string[]): void;
     /** Returns the current state for a feature. Auto-registers on first call. */
     feature(name: string): FeatureState;
-    /** Load features for a user (or anonymous). Called by Onelo orchestrator. */
+    /** Load features for a user (or anonymous). Called by Onelo orchestrator.
+     * Restores cache for instant UI, then opens an SSE channel that delivers
+     * live updates whenever an admin clicks Deploy in the dashboard. */
     load(userId: string | null): Promise<void>;
     /** Returns names of all features with an active status (enabled, new, or beta). */
     getActiveFeatures(): string[];
-    /** Stop background polling. Call when SDK is no longer needed. */
+    /** Tear down the SSE connection. Call when the SDK instance is no longer needed
+     * (e.g. on app shutdown). Kept named `stopPolling` for back-compat with the
+     * old polling-based API. */
     stopPolling(): void;
     /** Clears the local feature cache and resets the config version. The next feature() call will re-fetch. */
     invalidateCache(): void;
@@ -99,8 +106,14 @@ declare class OneloFeatures {
      * Suppressed via OneloConfig.suppressIdentifyWarning.
      */
     private _maybeWarnAnonymous;
-    private _poll;
-    private _startPolling;
+    private _supportsSse;
+    private _connectSSE;
+    private _scheduleReconnect;
+    private _closeSse;
+    private _cacheKey;
+    private _loadCache;
+    private _writeCache;
+    private _applySnapshot;
 }
 
 interface MonitorEventOptions {
