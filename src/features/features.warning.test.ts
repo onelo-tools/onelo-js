@@ -22,7 +22,10 @@ vi.mock('@onelo/core', async () => {
 import { OneloFeatures } from './features'
 
 describe('OneloFeatures identify() warning', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>
+  // Vitest's MockInstance generic constraints don't unify cleanly across module
+  // boundaries, so we deliberately keep this loosely typed in the test scope.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let warnSpy: any
 
   beforeEach(() => {
     httpPostMock.mockReset()
