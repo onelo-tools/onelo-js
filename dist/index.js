@@ -363,7 +363,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.12.0-staging";
+var version = "0.12.1-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -448,7 +448,7 @@ var _OneloAuth = class _OneloAuth {
     if (result.type === "error") throw import_core5.OneloError.server(result.message);
     const { status, json } = await (0, import_core3.httpPost)(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,
-      { publishableKey: this.publishableKey, code: result.code },
+      { publishableKey: this.publishableKey, code: result.code, code_verifier: this.pkceVerifier },
       { "X-SDK-Version": version }
     );
     if (status !== 200) throw import_core5.OneloError.server("Hosted callback failed");

@@ -110,7 +110,7 @@ export class OneloAuth {
 
     const { status, json } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,
-      { publishableKey: this.publishableKey, code: result.code },
+      { publishableKey: this.publishableKey, code: result.code, code_verifier: this.pkceVerifier },
       { 'X-SDK-Version': SDK_VERSION }
     )
     if (status !== 200) throw OneloError.server('Hosted callback failed')
