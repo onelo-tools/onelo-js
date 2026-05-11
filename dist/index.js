@@ -363,7 +363,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.12.1-staging";
+var version = "0.13.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -371,6 +371,7 @@ var _OneloAuth = class _OneloAuth {
     this.pkceVerifier = null;
     this.resolvedConfig = null;
     this.heartbeatTimer = null;
+    this.refreshTimer = null;
     this.authStateListeners = [];
     this.isReady = false;
     this.isRevoked = false;
@@ -512,6 +513,7 @@ var _OneloAuth = class _OneloAuth {
   // ── Session management ──────────────────────────────────────────────────────
   async signOut() {
     this.stopHeartbeat();
+    this.clearRefreshTimer();
     await this.storage.clear();
     this.notifyListeners(null);
   }
@@ -527,7 +529,9 @@ var _OneloAuth = class _OneloAuth {
     if (Date.now() / 1e3 > expiresAt - 60) {
       return this.refreshSession();
     }
-    return { accessToken, refreshToken, expiresAt, user: JSON.parse(userJson) };
+    const session = { accessToken, refreshToken, expiresAt, user: JSON.parse(userJson) };
+    this.scheduleRefresh(session);
+    return session;
   }
   async refreshSession() {
     const refreshToken = await this.storage.get(import_core.TOKEN_KEYS.REFRESH_TOKEN);
@@ -540,16 +544,19 @@ var _OneloAuth = class _OneloAuth {
     (0, import_core3.checkHostedFlowRequired)(json);
     const j = json;
     if (j["error"] === "user_revoked") {
+      this.clearRefreshTimer();
       await this.storage.clear();
       this.notifyListeners(null);
       throw import_core5.OneloError.userRevoked();
     }
     if (j["error"] === "app_revoked") {
+      this.clearRefreshTimer();
       await this.storage.clear();
       this.notifyListeners(null);
       throw import_core5.OneloError.revoked();
     }
     if (status !== 200) {
+      this.clearRefreshTimer();
       await this.storage.clear();
       this.notifyListeners(null);
       return null;
@@ -588,6 +595,28 @@ var _OneloAuth = class _OneloAuth {
       this.heartbeatTimer = null;
     }
   }
+  /**
+   * Schedule a background refresh of the access token to fire `REFRESH_LEAD_SECONDS`
+   * before it expires. Idempotent — cancels any pending refresh first. Without this,
+   * an idle app would carry a stale token past its TTL and the next request would 401.
+   */
+  scheduleRefresh(session) {
+    this.clearRefreshTimer();
+    const nowSec = Date.now() / 1e3;
+    const delaySec = session.expiresAt - nowSec - _OneloAuth.REFRESH_LEAD_SECONDS;
+    const delayMs = delaySec > 0 ? delaySec * 1e3 : 0;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshSession().catch(() => {
+      });
+    }, delayMs);
+  }
+  clearRefreshTimer() {
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
   async saveSession(session) {
     await Promise.all([
       this.storage.set(import_core.TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
@@ -597,6 +626,7 @@ var _OneloAuth = class _OneloAuth {
     ]);
     this.notifyListeners(session);
     this.startHeartbeat(session.accessToken);
+    this.scheduleRefresh(session);
   }
   notifyListeners(session) {
     for (const cb of this.authStateListeners) cb(session);
@@ -621,6 +651,8 @@ var _OneloAuth = class _OneloAuth {
   }
 };
 _OneloAuth.HEARTBEAT_MS = 13 * 60 * 1e3;
+/** Refresh this many seconds before the access token expires. */
+_OneloAuth.REFRESH_LEAD_SECONDS = 60;
 var OneloAuth = _OneloAuth;
 
 // src/features/features.ts

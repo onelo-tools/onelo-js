@@ -9,7 +9,10 @@ declare class OneloAuth {
     private pkceVerifier;
     private resolvedConfig;
     private heartbeatTimer;
+    private refreshTimer;
     private static readonly HEARTBEAT_MS;
+    /** Refresh this many seconds before the access token expires. */
+    private static readonly REFRESH_LEAD_SECONDS;
     private initPromise;
     private authStateListeners;
     isReady: boolean;
@@ -35,6 +38,13 @@ declare class OneloAuth {
     onAuthStateChange(callback: (session: OneloSession | null) => void): () => void;
     private startHeartbeat;
     private stopHeartbeat;
+    /**
+     * Schedule a background refresh of the access token to fire `REFRESH_LEAD_SECONDS`
+     * before it expires. Idempotent — cancels any pending refresh first. Without this,
+     * an idle app would carry a stale token past its TTL and the next request would 401.
+     */
+    private scheduleRefresh;
+    private clearRefreshTimer;
     private saveSession;
     private notifyListeners;
     /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
