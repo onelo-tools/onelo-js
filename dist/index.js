@@ -186,6 +186,66 @@ var require_session = __commonJS({
   }
 });
 
+// ../onelo-core/dist/reason-enum.js
+var require_reason_enum = __commonJS({
+  "../onelo-core/dist/reason-enum.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.REASON_LABELS = exports2.RESPONSE_REASON_CODES = void 0;
+    exports2.RESPONSE_REASON_CODES = [
+      "too_expensive",
+      "missing_features",
+      "not_working",
+      "not_using_anymore",
+      "found_alternative",
+      "bought_by_mistake",
+      "duplicate_charge",
+      "unauthorized",
+      "prefer_not_to_say",
+      "other",
+      "skipped"
+    ];
+    exports2.REASON_LABELS = {
+      too_expensive: "Too expensive",
+      missing_features: "Missing features",
+      not_working: "Doesn't work as expected",
+      not_using_anymore: "Not using anymore",
+      found_alternative: "Found alternative",
+      bought_by_mistake: "Bought by mistake",
+      duplicate_charge: "Duplicate charge",
+      unauthorized: "I didn't authorise this",
+      prefer_not_to_say: "Prefer not to say",
+      other: "Other",
+      skipped: "(skipped survey)"
+    };
+  }
+});
+
+// ../onelo-core/dist/paywall.js
+var require_paywall = __commonJS({
+  "../onelo-core/dist/paywall.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.cancelSubscription = cancelSubscription;
+    var http_1 = require_http();
+    var types_1 = require_types();
+    async function cancelSubscription(apiUrl, publishableKey, accessToken, opts = {}) {
+      const body = { publishableKey };
+      if (opts.reasonCode)
+        body.reason_code = opts.reasonCode;
+      if (opts.reasonText)
+        body.reason_text = opts.reasonText.slice(0, 500);
+      const { status, json } = await (0, http_1.httpPost)(`${apiUrl}/api/sdk/paywall/cancel`, body, { Authorization: `Bearer ${accessToken}` });
+      if (status !== 200) {
+        const j = json;
+        const msg = typeof j["detail"] === "string" ? j["detail"] : "Failed to cancel subscription";
+        throw types_1.OneloError.server(msg);
+      }
+      return { cancelled: true };
+    }
+  }
+});
+
 // ../onelo-core/dist/index.js
 var require_dist = __commonJS({
   "../onelo-core/dist/index.js"(exports2) {
@@ -211,6 +271,8 @@ var require_dist = __commonJS({
     __exportStar(require_pkce(), exports2);
     __exportStar(require_http(), exports2);
     __exportStar(require_session(), exports2);
+    __exportStar(require_reason_enum(), exports2);
+    __exportStar(require_paywall(), exports2);
   }
 });
 
@@ -363,7 +425,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.13.0-staging";
+var version = "0.14.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
