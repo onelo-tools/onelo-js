@@ -425,7 +425,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.14.0-staging";
+var version = "0.15.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -775,6 +775,7 @@ var OneloFeatures = class {
     this.publishableKey = publishableKey;
     if (monitor) this.monitor = monitor;
     this.suppressIdentifyWarning = options?.suppressIdentifyWarning ?? false;
+    this.featureEnvironment = options?.featureEnvironment;
   }
   /** Declare feature names upfront — triggers a batch-ping immediately. */
   declare(names) {
@@ -848,7 +849,8 @@ var OneloFeatures = class {
     try {
       await (0, import_core6.httpPost)(`${this.apiUrl}/api/sdk/features/batch-ping`, {
         publishableKey: this.publishableKey,
-        features: names
+        features: names,
+        ...this.featureEnvironment ? { environment: this.featureEnvironment } : {}
       });
     } catch {
     }
@@ -857,6 +859,7 @@ var OneloFeatures = class {
     try {
       const body = { publishableKey: this.publishableKey };
       if (userId) body["userId"] = userId;
+      if (this.featureEnvironment) body["environment"] = this.featureEnvironment;
       const { status, json } = await (0, import_core6.httpPost)(`${this.apiUrl}/api/sdk/features/resolve`, body);
       if (status !== 200) return;
       const j = json;
@@ -897,6 +900,7 @@ If your app is intentionally anonymous, pass suppressIdentifyWarning: true in On
       key: this.publishableKey,
       since_version: String(this.configVersion)
     });
+    if (this.featureEnvironment) params.set("environment", this.featureEnvironment);
     if (userId) params.set("userId", userId);
     const url = `${this.apiUrl}/api/sdk/features/stream?${params.toString()}`;
     let sse;
@@ -1298,8 +1302,16 @@ var Onelo = class {
     this.forms = new OneloForms(config.apiUrl, config.publishableKey);
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey);
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl);
+    let envFromProcess;
+    if (typeof window === "undefined") {
+      const proc = globalThis.process;
+      envFromProcess = proc?.env?.["ONELO_FEATURE_ENVIRONMENT"];
+    }
+    const rawFeatureEnv = config.featureEnvironment ?? envFromProcess;
+    const featureEnvironment = rawFeatureEnv === "test" || rawFeatureEnv === "live" ? rawFeatureEnv : void 0;
     this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor, {
-      suppressIdentifyWarning: config.suppressIdentifyWarning ?? false
+      suppressIdentifyWarning: config.suppressIdentifyWarning ?? false,
+      featureEnvironment
     });
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures());
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {

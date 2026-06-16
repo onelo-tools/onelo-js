@@ -44,6 +44,8 @@ const CACHE_KEY_PREFIX = 'onelo_features_'
 export interface OneloFeaturesOptions {
   /** Suppress the anonymous-mode identify() warning. See OneloConfig.suppressIdentifyWarning. */
   suppressIdentifyWarning?: boolean
+  /** Explicit feature environment ('test'|'live'), forwarded on resolve/batch-ping/SSE. See OneloConfig.featureEnvironment. */
+  featureEnvironment?: string
 }
 
 interface CachedSnapshot {
@@ -54,6 +56,7 @@ interface CachedSnapshot {
 export class OneloFeatures {
   private readonly apiUrl: string
   private readonly publishableKey: string
+  private readonly featureEnvironment?: string
   private cache: Map<string, FeatureStatus> = new Map()
   private discoveredNames: Set<string> = new Set()
   private configVersion = 0
@@ -78,6 +81,7 @@ export class OneloFeatures {
     this.publishableKey = publishableKey
     if (monitor) this.monitor = monitor
     this.suppressIdentifyWarning = options?.suppressIdentifyWarning ?? false
+    this.featureEnvironment = options?.featureEnvironment
   }
 
   /** Declare feature names upfront — triggers a batch-ping immediately. */
@@ -164,6 +168,7 @@ export class OneloFeatures {
       await httpPost(`${this.apiUrl}/api/sdk/features/batch-ping`, {
         publishableKey: this.publishableKey,
         features: names,
+        ...(this.featureEnvironment ? { environment: this.featureEnvironment } : {}),
       })
     } catch {
       // best-effort
@@ -174,6 +179,7 @@ export class OneloFeatures {
     try {
       const body: Record<string, unknown> = { publishableKey: this.publishableKey }
       if (userId) body['userId'] = userId
+      if (this.featureEnvironment) body['environment'] = this.featureEnvironment
       const { status, json } = await httpPost(`${this.apiUrl}/api/sdk/features/resolve`, body)
       if (status !== 200) return
       const j = json as Record<string, unknown>
@@ -221,6 +227,7 @@ export class OneloFeatures {
       key: this.publishableKey,
       since_version: String(this.configVersion),
     })
+    if (this.featureEnvironment) params.set('environment', this.featureEnvironment)
     if (userId) params.set('userId', userId)
     const url = `${this.apiUrl}/api/sdk/features/stream?${params.toString()}`
     let sse: EventSource

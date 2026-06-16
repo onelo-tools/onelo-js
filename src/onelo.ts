@@ -28,8 +28,23 @@ export class Onelo {
     this.forms = new OneloForms(config.apiUrl, config.publishableKey)
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
+    // Feature environment: explicit config wins; on the server (Node) fall back
+    // to ONELO_FEATURE_ENVIRONMENT. Server detection uses `typeof window` — NOT
+    // `typeof process`, which Webpack polyfills into client bundles (see memory
+    // feedback_env_isserver_detection). Normalize to 'test'|'live' so a stray
+    // value never ships as a junk query param.
+    let envFromProcess: string | undefined
+    if (typeof window === 'undefined') {
+      // Read process.env via globalThis with a local type so the browser build
+      // doesn't need @types/node and the bundler can't pull `process` in.
+      const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      envFromProcess = proc?.env?.['ONELO_FEATURE_ENVIRONMENT']
+    }
+    const rawFeatureEnv = config.featureEnvironment ?? envFromProcess
+    const featureEnvironment = rawFeatureEnv === 'test' || rawFeatureEnv === 'live' ? rawFeatureEnv : undefined
     this.features = new OneloFeatures(config.apiUrl, config.publishableKey, this.monitor, {
       suppressIdentifyWarning: config.suppressIdentifyWarning ?? false,
+      featureEnvironment,
     })
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
 
