@@ -1,11 +1,12 @@
 export { Onelo } from './onelo'
-export type {
-  OneloConfig,
-  IdentifyOptions,
-  FeatureStatus,
-  FeatureState,
-  ResolveResponse,
-  FormResult,
-  WaitlistResult,
-} from './types'
-export type { FormSubmitOptions } from './forms'
+export { OneloFeatures, FeatureState } from './features/features'
+export type { FeatureStatus } from './features/features'
+export { OneloMonitor } from './monitor/monitor'
+export type { MonitorEventOptions } from './monitor/monitor'
+export { OneloFeedback } from './feedback/feedback'
+export type { FeedbackOptions } from './feedback/feedback'
+export { OneloPaywall } from './paywall/paywall'
+export { OneloForms } from './forms/forms'
+export { OneloWaitlist } from './waitlist/waitlist'
+export { OneloError } from '@onelo/core'
+export type { OneloConfig, OneloSession, OneloUser } from '@onelo/core'
