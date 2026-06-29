@@ -15,11 +15,13 @@ export class OneloFeedback {
     const params = new URLSearchParams({ key: this.publishableKey })
     if (options.type) params.set('type', options.type)
     if (options.area) params.set('area', options.area)
-    if (options.userId) params.set('userId', options.userId)
     const active = this.getActiveFeatures()
     if (active.length > 0) params.set('session', JSON.stringify(active))
 
-    const res = await fetch(`${this.apiUrl}/api/sdk/feedback/initiate?${params}`)
+    // userId travels as a header (X-Onelo-User-Id), never a query param, so it
+    // never lands in the access-logged initiate URL.
+    const res = await fetch(`${this.apiUrl}/api/sdk/feedback/initiate?${params}`,
+      options.userId ? { headers: { 'X-Onelo-User-Id': options.userId } } : undefined)
     if (!res.ok) throw new Error(`Feedback initiate failed: ${res.status}`)
     const { hosted_url } = await res.json() as { hosted_url: string }
 

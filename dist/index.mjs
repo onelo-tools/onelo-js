@@ -404,7 +404,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.15.0-staging";
+var version = "0.15.1-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1083,10 +1083,12 @@ var OneloFeedback = class {
     const params = new URLSearchParams({ key: this.publishableKey });
     if (options.type) params.set("type", options.type);
     if (options.area) params.set("area", options.area);
-    if (options.userId) params.set("userId", options.userId);
     const active = this.getActiveFeatures();
     if (active.length > 0) params.set("session", JSON.stringify(active));
-    const res = await fetch(`${this.apiUrl}/api/sdk/feedback/initiate?${params}`);
+    const res = await fetch(
+      `${this.apiUrl}/api/sdk/feedback/initiate?${params}`,
+      options.userId ? { headers: { "X-Onelo-User-Id": options.userId } } : void 0
+    );
     if (!res.ok) throw new Error(`Feedback initiate failed: ${res.status}`);
     const { hosted_url } = await res.json();
     this._openModal(hosted_url);
