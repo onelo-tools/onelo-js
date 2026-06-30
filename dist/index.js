@@ -425,7 +425,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.15.1-staging";
+var version = "0.16.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1000,21 +1000,44 @@ If your app is intentionally anonymous, pass suppressIdentifyWarning: true in On
 };
 
 // src/monitor/monitor.ts
+var SDK_NAME = "@onelo/js";
 var MAX_BUFFER_SIZE = 200;
 var PLATFORM = "js";
 var _globalHandlersRegistered = false;
 var OneloMonitor = class {
-  constructor(publishableKey, apiUrl) {
+  constructor(publishableKey, apiUrl, context) {
     this.sessionId = crypto.randomUUID();
     this.buffer = [];
     this.flushTimer = null;
     this.currentUserId = null;
     this.publishableKey = publishableKey;
     this.apiUrl = apiUrl;
+    const app = {};
+    if (context?.appVersion) app.version = context.appVersion;
+    if (context?.appBuild) app.build = context.appBuild;
+    if (context?.bundleId) app.bundleId = context.bundleId;
+    this.staticMeta = {
+      sdk: { name: SDK_NAME, version },
+      ...Object.keys(app).length > 0 ? { app } : {}
+    };
+    this.environment = context?.environment;
     this.flushTimer = setInterval(() => {
       void this.flush();
     }, 15e3);
     this._registerGlobalHandlers();
+  }
+  /**
+   * Returns a new meta object with always-on context merged in. SDK-owned keys
+   * (`sdk`, `app`) are authoritative and override any caller-supplied value;
+   * `environment` is only filled when the caller did not set it per-event.
+   * Never mutates the caller's meta.
+   */
+  _enrich(meta) {
+    const out = { ...meta ?? {}, ...this.staticMeta };
+    if (this.environment != null && out["environment"] == null) {
+      out["environment"] = this.environment;
+    }
+    return out;
   }
   /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
   setUserId(userId) {
@@ -1064,7 +1087,7 @@ var OneloMonitor = class {
       ok,
       durationMs,
       error,
-      meta,
+      meta: this._enrich(meta),
       source,
       userId: this.currentUserId ?? void 0,
       sessionId: this.sessionId,
@@ -1303,7 +1326,12 @@ var Onelo = class {
     );
     this.forms = new OneloForms(config.apiUrl, config.publishableKey);
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey);
-    this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl);
+    this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl, {
+      appVersion: config.appVersion,
+      appBuild: config.appBuild,
+      bundleId: config.bundleId,
+      environment: config.environment
+    });
     let envFromProcess;
     if (typeof window === "undefined") {
       const proc = globalThis.process;

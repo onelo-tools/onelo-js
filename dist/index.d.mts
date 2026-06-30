@@ -135,6 +135,13 @@ interface MonitorEventOptions {
     error?: string;
     meta?: Record<string, unknown>;
 }
+/** Always-on context the SDK attaches to every event's meta (mirrors Swift's enrichMeta). */
+interface MonitorContext {
+    appVersion?: string;
+    appBuild?: string;
+    bundleId?: string;
+    environment?: string;
+}
 declare class OneloMonitor {
     private readonly publishableKey;
     private readonly apiUrl;
@@ -142,7 +149,17 @@ declare class OneloMonitor {
     private buffer;
     private flushTimer;
     private currentUserId;
-    constructor(publishableKey: string, apiUrl: string);
+    /** Pre-built static meta merged into every event (sdk + app). Computed once. */
+    private readonly staticMeta;
+    private readonly environment?;
+    constructor(publishableKey: string, apiUrl: string, context?: MonitorContext);
+    /**
+     * Returns a new meta object with always-on context merged in. SDK-owned keys
+     * (`sdk`, `app`) are authoritative and override any caller-supplied value;
+     * `environment` is only filled when the caller did not set it per-event.
+     * Never mutates the caller's meta.
+     */
+    private _enrich;
     /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
     setUserId(userId: string | null): void;
     _trackFeatureCall(featureName: string): void;
@@ -234,4 +251,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist };
+export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist };

@@ -27,7 +27,12 @@ export class Onelo {
     )
     this.forms = new OneloForms(config.apiUrl, config.publishableKey)
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
-    this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl)
+    this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl, {
+      appVersion: config.appVersion,
+      appBuild: config.appBuild,
+      bundleId: config.bundleId,
+      environment: config.environment,
+    })
     // Feature environment: explicit config wins; on the server (Node) fall back
     // to ONELO_FEATURE_ENVIRONMENT. Server detection uses `typeof window` — NOT
     // `typeof process`, which Webpack polyfills into client bundles (see memory

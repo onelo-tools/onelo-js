@@ -1,9 +1,21 @@
+import { version as SDK_VERSION } from '../../package.json'
+
 export interface MonitorEventOptions {
   ok: boolean
   durationMs?: number
   error?: string
   meta?: Record<string, unknown>
 }
+
+/** Always-on context the SDK attaches to every event's meta (mirrors Swift's enrichMeta). */
+export interface MonitorContext {
+  appVersion?: string
+  appBuild?: string
+  bundleId?: string
+  environment?: string
+}
+
+const SDK_NAME = '@onelo/js'
 
 type EventSource = 'feature_call' | 'track' | 'event' | 'global_error'
 
@@ -31,12 +43,38 @@ export class OneloMonitor {
   private buffer: BufferedEvent[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private currentUserId: string | null = null
+  /** Pre-built static meta merged into every event (sdk + app). Computed once. */
+  private readonly staticMeta: Record<string, unknown>
+  private readonly environment?: string
 
-  constructor(publishableKey: string, apiUrl: string) {
+  constructor(publishableKey: string, apiUrl: string, context?: MonitorContext) {
     this.publishableKey = publishableKey
     this.apiUrl = apiUrl
+    const app: Record<string, string> = {}
+    if (context?.appVersion) app.version = context.appVersion
+    if (context?.appBuild) app.build = context.appBuild
+    if (context?.bundleId) app.bundleId = context.bundleId
+    this.staticMeta = {
+      sdk: { name: SDK_NAME, version: SDK_VERSION },
+      ...(Object.keys(app).length > 0 ? { app } : {}),
+    }
+    this.environment = context?.environment
     this.flushTimer = setInterval(() => { void this.flush() }, 15000)
     this._registerGlobalHandlers()
+  }
+
+  /**
+   * Returns a new meta object with always-on context merged in. SDK-owned keys
+   * (`sdk`, `app`) are authoritative and override any caller-supplied value;
+   * `environment` is only filled when the caller did not set it per-event.
+   * Never mutates the caller's meta.
+   */
+  private _enrich(meta?: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...(meta ?? {}), ...this.staticMeta }
+    if (this.environment != null && out['environment'] == null) {
+      out['environment'] = this.environment
+    }
+    return out
   }
 
   /** Sets the current user ID attached to all subsequent monitor events. Call after login/logout if not using Onelo Auth. */
@@ -101,7 +139,7 @@ export class OneloMonitor {
       ok,
       durationMs,
       error,
-      meta,
+      meta: this._enrich(meta),
       source,
       userId: this.currentUserId ?? undefined,
       sessionId: this.sessionId,
