@@ -30,7 +30,7 @@ var require_types = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.OneloError = void 0;
-    var OneloError4 = class _OneloError extends Error {
+    var OneloError5 = class _OneloError extends Error {
       constructor(code, message) {
         super(message);
         this.code = code;
@@ -64,7 +64,7 @@ var require_types = __commonJS({
         return new _OneloError("user_revoked", "This user account has been suspended");
       }
     };
-    exports.OneloError = OneloError4;
+    exports.OneloError = OneloError5;
   }
 });
 
@@ -101,11 +101,11 @@ var require_http = __commonJS({
   "../onelo-core/dist/http.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.httpGet = httpGet3;
+    exports.httpGet = httpGet4;
     exports.httpPost = httpPost4;
     exports.checkHostedFlowRequired = checkHostedFlowRequired2;
     var types_1 = require_types();
-    async function httpGet3(url, headers) {
+    async function httpGet4(url, headers) {
       let res;
       try {
         res = await fetch(url, { headers });
@@ -404,7 +404,7 @@ var AuthModal = class {
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.16.0-staging";
+var version = "0.17.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1292,6 +1292,79 @@ var OneloWaitlist = class {
   }
 };
 
+// src/customer-portal/customer-portal.ts
+var import_core8 = __toESM(require_dist());
+var OneloCustomerPortal = class {
+  constructor(apiUrl, publishableKey, getAccessToken, onSessionInvalidated) {
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+    this.getAccessToken = getAccessToken;
+    this.onSessionInvalidated = onSessionInvalidated;
+  }
+  async open() {
+    const token = await this.getAccessToken();
+    if (!token) throw new import_core8.OneloError("not_authenticated", "Sign in before opening the customer portal");
+    const url = `${this.apiUrl}/api/sdk/paywall/portal-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=web`;
+    const { status, json } = await (0, import_core8.httpGet)(url, {
+      "X-SDK-Version": version,
+      Authorization: `Bearer ${token}`
+    });
+    if (status !== 200) throw import_core8.OneloError.server("Failed to initiate customer portal");
+    const j = json;
+    const hostedUrl = j["hosted_url"];
+    if (!hostedUrl) throw import_core8.OneloError.server("Invalid portal-initiate response");
+    return this.openPortalModal(hostedUrl);
+  }
+  openPortalModal(hostedUrl) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const expectedOrigin = new URL(hostedUrl).origin;
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;";
+      const container = document.createElement("div");
+      container.style.cssText = "position:relative;width:480px;height:640px;border-radius:12px;overflow:hidden;background:#111;";
+      const iframe = document.createElement("iframe");
+      iframe.src = hostedUrl;
+      iframe.style.cssText = "width:100%;height:100%;border:none;";
+      iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups");
+      const cancelBtn = document.createElement("button");
+      cancelBtn.setAttribute("data-onelo-cancel", "");
+      cancelBtn.textContent = "\u2715";
+      cancelBtn.style.cssText = "position:absolute;top:10px;right:12px;background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:18px;cursor:pointer;line-height:1;padding:4px;";
+      container.appendChild(iframe);
+      container.appendChild(cancelBtn);
+      overlay.appendChild(container);
+      document.body.appendChild(overlay);
+      const close = () => {
+        window.removeEventListener("message", messageHandler);
+        overlay.remove();
+      };
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        close();
+        resolve();
+      };
+      const messageHandler = (e) => {
+        if (e.origin !== expectedOrigin) return;
+        if (e.source !== iframe.contentWindow) return;
+        const data = e.data;
+        if (data?.type === "onelo:portal_done") {
+          if (data.event === "account_deletion_scheduled") {
+            this.onSessionInvalidated?.();
+          }
+          done();
+        }
+      };
+      window.addEventListener("message", messageHandler);
+      cancelBtn.addEventListener("click", () => done());
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) done();
+      });
+    });
+  }
+};
+
 // src/onelo.ts
 var Onelo = class {
   constructor(config) {
@@ -1302,6 +1375,14 @@ var Onelo = class {
       config.publishableKey,
       () => this.auth.getSession().then((s) => s?.accessToken ?? null),
       (session) => this.auth.importSession(session)
+    );
+    this.customerPortal = new OneloCustomerPortal(
+      config.apiUrl,
+      config.publishableKey,
+      () => this.auth.getSession().then((s) => s?.accessToken ?? null),
+      () => {
+        void this.auth.signOut();
+      }
     );
     this.forms = new OneloForms(config.apiUrl, config.publishableKey);
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey);
@@ -1351,11 +1432,12 @@ var Onelo = class {
 };
 
 // src/index.ts
-var import_core8 = __toESM(require_dist());
-var export_OneloError = import_core8.OneloError;
+var import_core9 = __toESM(require_dist());
+var export_OneloError = import_core9.OneloError;
 export {
   FeatureState,
   Onelo,
+  OneloCustomerPortal,
   export_OneloError as OneloError,
   OneloFeatures,
   OneloFeedback,

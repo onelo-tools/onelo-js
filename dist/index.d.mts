@@ -228,6 +228,16 @@ declare class OneloWaitlist {
     }>;
 }
 
+declare class OneloCustomerPortal {
+    private apiUrl;
+    private publishableKey;
+    private getAccessToken;
+    private onSessionInvalidated?;
+    constructor(apiUrl: string, publishableKey: string, getAccessToken: () => Promise<string | null>, onSessionInvalidated?: () => void);
+    open(): Promise<void>;
+    private openPortalModal;
+}
+
 declare class Onelo {
     readonly auth: OneloAuth;
     readonly features: OneloFeatures;
@@ -236,6 +246,7 @@ declare class Onelo {
     readonly paywall: OneloPaywall;
     readonly forms: OneloForms;
     readonly waitlist: OneloWaitlist;
+    readonly customerPortal: OneloCustomerPortal;
     private authUnsubscribe;
     constructor(config: OneloConfig);
     /**
@@ -251,4 +262,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, OneloFeatures, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist };
+export { FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, OneloCustomerPortal, OneloFeatures, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist };
