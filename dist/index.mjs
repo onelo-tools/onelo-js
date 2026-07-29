@@ -42,8 +42,22 @@ var require_types = __commonJS({
       static hostedFlowRequired() {
         return new _OneloError("hosted_flow_required", "This app requires the hosted sign-in flow. Use loadAuthView().");
       }
+      /**
+       * The DEVELOPER's app is on a plan that doesn't allow custom auth UI. This is
+       * a build-time configuration error — the fix is to use the hosted flow
+       * (loadAuthView) or upgrade the Onelo plan. NOT for an end-user's lapsed
+       * subscription — see noActivePlan().
+       */
       static planRequired() {
         return new _OneloError("plan_required", "[plan_required] Custom UI requires a paid Onelo plan. Use loadAuthView() instead.");
+      }
+      /**
+       * The END USER has no active subscription (it lapsed or was cancelled) — the
+       * backend cleared the session. This is NOT a config error and NOT an account
+       * revocation: route the user to your store / upgrade flow to re-subscribe.
+       */
+      static noActivePlan() {
+        return new _OneloError("no_active_plan", "[no_active_plan] No active subscription \u2014 the plan has expired or was cancelled. Route the user to your store / upgrade flow to re-subscribe.");
       }
       static invalidKey(msg) {
         return new _OneloError("invalid_publishable_key", `Invalid publishable key: ${msg}`);
@@ -457,7 +471,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.34.0-staging";
+var version = "0.34.1-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -822,7 +836,7 @@ var _OneloAuth = class _OneloAuth {
         throw import_core5.OneloError.userRevoked();
       }
       if (reason === "no_plan_available") {
-        throw import_core5.OneloError.planRequired();
+        throw import_core5.OneloError.noActivePlan();
       }
       return null;
     }

@@ -491,7 +491,7 @@ export class OneloAuth {
       // cleared above: the backend enforces sign-out, so the app should route
       // the buyer to the store / upgrade.
       if (reason === 'no_plan_available') {
-        throw OneloError.planRequired()
+        throw OneloError.noActivePlan()
       }
       // benign (session_expired / session_invalid) → just clear + null.
       return null

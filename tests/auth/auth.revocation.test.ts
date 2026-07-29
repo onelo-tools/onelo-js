@@ -323,7 +323,7 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     expect(await auth.getSession()).toBeNull()      // still signed out
   })
 
-  it('refresh no_plan_available → throws planRequired (not "suspended"), clears, no isUserRevoked', async () => {
+  it('refresh no_plan_available → throws noActivePlan (not "suspended"/custom-UI), clears, no isUserRevoked', async () => {
     const auth = newAuth(); await auth.whenReady()
     await auth.importSession(SESSION)
     mockFetch.mockImplementation((url: string) =>
@@ -332,7 +332,9 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
 
     const err = await auth.refreshSession().catch((e) => e)
     expect(err).toBeInstanceOf(OneloError)
-    expect((err as OneloError).code).toBe('plan_required')
+    // A lapsed subscription is `no_active_plan` (route to store/upgrade) — NOT
+    // `plan_required` (which means "custom UI needs a paid plan / use loadAuthView").
+    expect((err as OneloError).code).toBe('no_active_plan')
     expect(auth.isUserRevoked).toBe(false) // no-plan is NOT an account revocation
     expect(await auth.getSession()).toBeNull()
   })
