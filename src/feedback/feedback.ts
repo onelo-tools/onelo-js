@@ -1,3 +1,5 @@
+import { installFailsafeClose } from '../core/failsafe-close'
+
 export interface FeedbackOptions {
   type?: 'bug' | 'feature_request' | 'general'
   area?: string
@@ -37,8 +39,12 @@ export class OneloFeedback {
     iframe.src = url
     iframe.style.cssText = 'width:100%;height:100%;border:none'
 
-    // Close (✕), top-right — the single unified close position across every Onelo
-    // modal + SDK. Identical style to the customer-portal cancel button.
+    // Fail-safe ✕ ONLY. The canonical close ✕ is drawn by the hosted feedback
+    // page itself (`HostedCloseX`) — identical on every platform. This SDK button
+    // is a fail-safe for the skeleton / load-error window, hidden on a normal
+    // load and hidden again on `onelo:ready`, so the two never stack into the
+    // double-✕ (#40). `installFailsafeClose` keeps it hidden until a ~3.5s grace
+    // without ready (no-flash, #44).
     const cancelBtn = document.createElement('button')
     cancelBtn.setAttribute('data-onelo-cancel', '')
     cancelBtn.setAttribute('aria-label', 'Close')
@@ -50,14 +56,22 @@ export class OneloFeedback {
     overlay.appendChild(container)
     document.body.appendChild(overlay)
 
+    const failsafe = installFailsafeClose(cancelBtn)
+
     // overlay.remove() is idempotent (no-op if already detached) — safe against a
     // double close now that ✕, backdrop, and postMessage can all trigger it.
-    const close = () => { overlay.remove(); window.removeEventListener('message', onMsg) }
+    const close = () => { failsafe.dispose(); overlay.remove(); window.removeEventListener('message', onMsg) }
     overlay.addEventListener('click', e => { if (e.target === overlay) close() })
     cancelBtn.addEventListener('click', () => close())
 
+    // Messages from the hosted feedback page:
+    //  • onelo:ready              → page mounted, its canonical ✕ took over → hide our fail-safe ✕
+    //  • onelo:feedback_close     → user tapped the canonical hosted ✕ → dismiss
+    //  • onelo:feedback_submitted → submit auto-closed (existing)
     const onMsg = (e: MessageEvent) => {
-      if (e.data?.type === 'onelo:feedback_submitted') close()
+      const type = e.data?.type
+      if (type === 'onelo:ready') failsafe.markReady()
+      else if (type === 'onelo:feedback_close' || type === 'onelo:feedback_submitted') close()
     }
     window.addEventListener('message', onMsg)
   }

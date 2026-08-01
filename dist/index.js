@@ -495,7 +495,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.34.1-staging";
+var version = "0.34.2-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1824,6 +1824,40 @@ var OneloMonitor = class {
   }
 };
 
+// src/core/failsafe-close.ts
+function installFailsafeClose(btn, graceMs = 3500) {
+  const shownDisplay = btn.style.display || "";
+  let ready = false;
+  let timer;
+  const arm = () => {
+    ready = false;
+    btn.style.display = "none";
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!ready) btn.style.display = shownDisplay;
+    }, graceMs);
+  };
+  arm();
+  return {
+    markReady() {
+      if (ready) return;
+      ready = true;
+      clearTimeout(timer);
+      btn.style.display = "none";
+    },
+    // Re-arm after the iframe navigates to a NEW document — e.g. the portal
+    // auto-advancing to /store/hosted, which carries NO canonical hosted ✕. A
+    // prior markReady() latched the button hidden; without re-arming, the user
+    // lands on a page with no ✕ and no way out. Re-arming hides it again and
+    // restarts the grace, so the fail-safe ✕ returns unless the new page also
+    // signals ready.
+    rearm: arm,
+    dispose() {
+      clearTimeout(timer);
+    }
+  };
+}
+
 // src/feedback/feedback.ts
 var OneloFeedback = class {
   constructor(apiUrl, publishableKey, getActiveFeatures) {
@@ -1862,7 +1896,9 @@ var OneloFeedback = class {
     container.appendChild(cancelBtn);
     overlay.appendChild(container);
     document.body.appendChild(overlay);
+    const failsafe = installFailsafeClose(cancelBtn);
     const close = () => {
+      failsafe.dispose();
       overlay.remove();
       window.removeEventListener("message", onMsg);
     };
@@ -1871,7 +1907,9 @@ var OneloFeedback = class {
     });
     cancelBtn.addEventListener("click", () => close());
     const onMsg = (e) => {
-      if (e.data?.type === "onelo:feedback_submitted") close();
+      const type = e.data?.type;
+      if (type === "onelo:ready") failsafe.markReady();
+      else if (type === "onelo:feedback_close" || type === "onelo:feedback_submitted") close();
     };
     window.addEventListener("message", onMsg);
   }
@@ -2140,18 +2178,28 @@ var OneloCustomerPortal = class {
       iframe.style.cssText = "width:100%;height:100%;border:none;";
       iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox");
       const cancelBtn = createModalCloseButton();
+      const failsafe = installFailsafeClose(cancelBtn);
       const skeleton = document.createElement("iframe");
       skeleton.setAttribute("aria-hidden", "true");
       skeleton.setAttribute("sandbox", "");
       skeleton.srcdoc = loadingHtml;
       skeleton.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none;";
-      iframe.addEventListener("load", () => skeleton.remove());
+      let firstLoad = true;
+      iframe.addEventListener("load", () => {
+        skeleton.remove();
+        if (firstLoad) {
+          firstLoad = false;
+          return;
+        }
+        failsafe.rearm();
+      });
       container.appendChild(iframe);
       container.appendChild(skeleton);
       container.appendChild(cancelBtn);
       overlay.appendChild(container);
       document.body.appendChild(overlay);
       const close = () => {
+        failsafe.dispose();
         window.removeEventListener("message", messageHandler);
         overlay.remove();
       };
@@ -2165,6 +2213,10 @@ var OneloCustomerPortal = class {
         if (e.origin !== expectedOrigin) return;
         if (e.source !== iframe.contentWindow) return;
         const data = e.data;
+        if (data?.type === "onelo:ready") {
+          failsafe.markReady();
+          return;
+        }
         if (data?.type === "onelo:portal_done") {
           if (typeof data.event === "string" && PORTAL_REVOKE_EVENTS.has(data.event)) {
             this.onSessionInvalidated?.();

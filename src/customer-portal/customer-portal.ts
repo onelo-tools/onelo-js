@@ -1,6 +1,7 @@
 import { httpGet, OneloError } from '@onelo/core'
 import { version as SDK_VERSION } from '../../package.json'
 import { createModalCloseButton } from '../core/modal-close-button'
+import { installFailsafeClose } from '../core/failsafe-close'
 
 // Hard account-lifecycle events the portal can signal back — each clears the
 // local session so the app re-authenticates. Single source of truth for the
@@ -160,18 +161,34 @@ export class OneloCustomerPortal {
       // the PDF downloads / the receipt page works.
       iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox')
 
+      // Fail-safe ✕ ONLY. The canonical close ✕ is drawn by the hosted portal
+      // page itself (`HostedCloseX`, shown because we pass callback_scheme=web).
+      // This SDK chip is a fail-safe for the skeleton / load-error window, hidden
+      // on a normal load and on `onelo:ready`, so the two never stack into the
+      // double-✕ (#40). Its click still runs the same dismiss (done()).
       const cancelBtn = createModalCloseButton()
+      const failsafe = installFailsafeClose(cancelBtn)
 
       // Loading skeleton — a srcdoc iframe stacked over the real one (later
       // sibling wins), pointer-events:none so clicks fall through, removed the
       // moment the real portal iframe fires 'load'. cancelBtn is appended LAST so
-      // the ✕ stays clickable above the skeleton during loading.
+      // the ✕ (once the fail-safe reveals it) stays clickable above the skeleton.
       const skeleton = document.createElement('iframe')
       skeleton.setAttribute('aria-hidden', 'true')
       skeleton.setAttribute('sandbox', '')
       skeleton.srcdoc = loadingHtml
       skeleton.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none;'
-      iframe.addEventListener('load', () => skeleton.remove())
+      // First 'load' = the portal page itself (hides its own ✕ via `onelo:ready`).
+      // A SUBSEQUENT 'load' = an in-iframe navigation — the upsell change_plan flow
+      // hard-navigates this same iframe to /store/hosted, which renders NO canonical
+      // hosted ✕ and never posts `onelo:ready`. Re-arm the fail-safe so the ✕ comes
+      // back and the user isn't trapped on the plan-picker with no way to abandon.
+      let firstLoad = true
+      iframe.addEventListener('load', () => {
+        skeleton.remove()
+        if (firstLoad) { firstLoad = false; return }
+        failsafe.rearm()
+      })
 
       container.appendChild(iframe)
       container.appendChild(skeleton)
@@ -180,6 +197,7 @@ export class OneloCustomerPortal {
       document.body.appendChild(overlay)
 
       const close = (): void => {
+        failsafe.dispose()
         window.removeEventListener('message', messageHandler)
         overlay.remove()
       }
@@ -195,6 +213,12 @@ export class OneloCustomerPortal {
         if (e.origin !== expectedOrigin) return
         if (e.source !== iframe.contentWindow) return
         const data = e.data as Record<string, unknown>
+        // Hosted page mounted → its canonical ✕ took over → hide our fail-safe ✕
+        // (kills the double-✕, #40). Not a close signal — the modal stays open.
+        if (data?.type === 'onelo:ready') {
+          failsafe.markReady()
+          return
+        }
         if (data?.type === 'onelo:portal_done') {
           if (typeof data.event === 'string' && PORTAL_REVOKE_EVENTS.has(data.event)) {
             this.onSessionInvalidated?.()
