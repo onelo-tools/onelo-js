@@ -560,7 +560,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.35.0-staging";
+var version = "0.36.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
