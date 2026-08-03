@@ -56,10 +56,41 @@ describe('AuthModal — modes', () => {
     const openSpy = vi.spyOn(window, 'open')
     const modal = new AuthModal()
     void modal.open(HOSTED, 'embedded')
-    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(HOSTED)
+    // `iframe[src]` targets the HOSTED frame specifically — the overlay also
+    // contains a srcdoc skeleton iframe painted behind it.
+    expect(document.querySelector('iframe[src]')?.getAttribute('src')).toBe(HOSTED)
     expect(openSpy).not.toHaveBeenCalled()
     modal.close()
     expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it('embedded mode paints a skeleton behind the hosted frame, dropped on onelo:ready', () => {
+    const modal = new AuthModal()
+    void modal.open(HOSTED, 'embedded')
+    const skeleton = () => document.querySelector('iframe[aria-hidden="true"]')
+    expect(skeleton()).not.toBeNull()
+    expect(skeleton()?.getAttribute('srcdoc')).toContain('onelo-shimmer')
+
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: 'onelo:ready' }, origin: new URL(HOSTED).origin }),
+    )
+    expect(skeleton()).toBeNull()
+    modal.close()
+  })
+
+  it('embedded ✕ stays hidden on a healthy load (sign-in is the first screen, not a modal)', () => {
+    const modal = new AuthModal()
+    void modal.open(HOSTED, 'embedded')
+    const x = () => document.querySelector<HTMLElement>('[data-onelo-cancel]')
+    // Hidden from the very first frame — no flash before the page paints.
+    expect(x()?.style.display).toBe('none')
+
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: 'onelo:ready' }, origin: new URL(HOSTED).origin }),
+    )
+    // Still hidden after the hosted page reports ready.
+    expect(x()?.style.display).toBe('none')
+    modal.close()
   })
 
   it('defaults to popup', () => {

@@ -376,7 +376,76 @@ function createModalCloseButton() {
   return btn;
 }
 
+// src/core/failsafe-close.ts
+function installFailsafeClose(btn, graceMs = 3500) {
+  const shownDisplay = btn.style.display || "";
+  let ready = false;
+  let timer;
+  const arm = () => {
+    ready = false;
+    btn.style.display = "none";
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!ready) btn.style.display = shownDisplay;
+    }, graceMs);
+  };
+  arm();
+  return {
+    markReady() {
+      if (ready) return;
+      ready = true;
+      clearTimeout(timer);
+      btn.style.display = "none";
+    },
+    // Re-arm after the iframe navigates to a NEW document — e.g. the portal
+    // auto-advancing to /store/hosted, which carries NO canonical hosted ✕. A
+    // prior markReady() latched the button hidden; without re-arming, the user
+    // lands on a page with no ✕ and no way out. Re-arming hides it again and
+    // restarts the grace, so the fail-safe ✕ returns unless the new page also
+    // signals ready.
+    rearm: arm,
+    dispose() {
+      clearTimeout(timer);
+    }
+  };
+}
+
 // src/auth/auth-modal.ts
+var AUTH_SKELETON_HTML = `<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden}
+@keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}
+.wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:48px 24px 0}
+.col{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+.sk{background-color:rgba(255,255,255,0.04);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.14) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:8px}
+.strong{background-color:rgba(255,255,255,0.08);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.20) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:9px}
+.logo{width:64px;height:64px;border-radius:14px;margin-bottom:14px;background:rgba(255,255,255,0.06);border:1.5px solid rgba(255,255,255,0.1)}
+.head{width:200px;height:22px;margin-bottom:10px;border-radius:6px}
+.sub{width:140px;height:13px;opacity:0.7;margin-bottom:28px;border-radius:4px}
+.lbl{width:38px;height:11px}
+.lbl2{width:58px;height:11px}
+.forgot{width:90px;height:11px;opacity:0.7}
+.input{height:44px}
+.cta{height:48px;margin-top:6px;border-radius:10px}
+.row{display:flex;justify-content:space-between;align-items:center}
+.link{width:200px;height:12px;opacity:0.6;margin-top:6px;align-self:center}
+</style></head><body>
+<div class="wrap">
+<div class="sk logo"></div>
+<div class="sk head"></div>
+<div class="sk sub"></div>
+<div class="col">
+<div class="sk lbl"></div>
+<div class="strong input" style="margin-bottom:2px"></div>
+<div class="row"><div class="sk lbl2"></div><div class="sk forgot"></div></div>
+<div class="strong input"></div>
+<div class="strong cta"></div>
+<div class="sk link"></div>
+</div>
+</div>
+</body></html>`;
 var _AuthModal = class _AuthModal {
   constructor() {
     this.overlay = null;
@@ -385,6 +454,10 @@ var _AuthModal = class _AuthModal {
     this.popupPoll = null;
     this.messageHandler = null;
     this.loadWatchdog = null;
+    /** Fail-safe ✕ controller for the embedded overlay (see failsafe-close.ts). */
+    this.failsafe = null;
+    /** The skeleton iframe shown behind the hosted page until it paints. */
+    this.skeleton = null;
   }
   clearLoadWatchdog() {
     if (this.loadWatchdog) {
@@ -406,6 +479,11 @@ var _AuthModal = class _AuthModal {
         if (e.origin !== allowedOrigin) return;
         this.clearLoadWatchdog();
         const data = e.data;
+        if (data?.type === "onelo:ready") {
+          this.failsafe?.markReady();
+          this.skeleton?.remove();
+          this.skeleton = null;
+        }
         if (data?.type === "onelo:code" && typeof data.code === "string") settle({ type: "code", code: data.code });
         else if (data?.type === "onelo:cancel") settle({ type: "cancelled" });
         else if (data?.type === "onelo:error") settle({ type: "error", message: String(data.message ?? "Auth error") });
@@ -440,6 +518,9 @@ var _AuthModal = class _AuthModal {
   }
   close() {
     this.clearLoadWatchdog();
+    this.failsafe?.dispose();
+    this.failsafe = null;
+    this.skeleton = null;
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
       this.messageHandler = null;
@@ -470,11 +551,19 @@ var _AuthModal = class _AuthModal {
       "background:#111"
     ].join(";");
     this.container = container;
+    const skeleton = document.createElement("iframe");
+    skeleton.setAttribute("aria-hidden", "true");
+    skeleton.setAttribute("sandbox", "");
+    skeleton.srcdoc = AUTH_SKELETON_HTML;
+    skeleton.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none;";
+    this.skeleton = skeleton;
     const iframe = document.createElement("iframe");
     iframe.src = hostedUrl;
-    iframe.style.cssText = "width:100%;height:100%;border:none;";
+    iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:none;";
     iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups");
     const cancelBtn = createModalCloseButton();
+    this.failsafe = installFailsafeClose(cancelBtn);
+    container.appendChild(skeleton);
     container.appendChild(iframe);
     container.appendChild(cancelBtn);
     overlay.appendChild(container);
@@ -495,7 +584,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.34.2-staging";
+var version = "0.35.0-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1823,40 +1912,6 @@ var OneloMonitor = class {
     this._push("unhandled", false, void 0, message, this._withError(void 0, stack), "global_error");
   }
 };
-
-// src/core/failsafe-close.ts
-function installFailsafeClose(btn, graceMs = 3500) {
-  const shownDisplay = btn.style.display || "";
-  let ready = false;
-  let timer;
-  const arm = () => {
-    ready = false;
-    btn.style.display = "none";
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      if (!ready) btn.style.display = shownDisplay;
-    }, graceMs);
-  };
-  arm();
-  return {
-    markReady() {
-      if (ready) return;
-      ready = true;
-      clearTimeout(timer);
-      btn.style.display = "none";
-    },
-    // Re-arm after the iframe navigates to a NEW document — e.g. the portal
-    // auto-advancing to /store/hosted, which carries NO canonical hosted ✕. A
-    // prior markReady() latched the button hidden; without re-arming, the user
-    // lands on a page with no ✕ and no way out. Re-arming hides it again and
-    // restarts the grace, so the fail-safe ✕ returns unless the new page also
-    // signals ready.
-    rearm: arm,
-    dispose() {
-      clearTimeout(timer);
-    }
-  };
-}
 
 // src/feedback/feedback.ts
 var OneloFeedback = class {
