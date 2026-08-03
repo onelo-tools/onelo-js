@@ -415,9 +415,14 @@ var AUTH_SKELETON_HTML = `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden}
+/* Centred exactly like the hosted page's own Suspense fallback
+   (frontend/app/auth/hosted/page.tsx): flex centre + min-height:100vh on a
+   #111111 ground. Top-aligning here would make the placeholder jump to the
+   middle the moment the real form paints. */
+body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;min-height:100vh}
 @keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}
-.wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:48px 24px 0}
+.wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:24px}
 .col{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
 .sk{background-color:rgba(255,255,255,0.04);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.14) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:8px}
 .strong{background-color:rgba(255,255,255,0.08);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.20) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:9px}
@@ -584,7 +589,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.36.0-staging";
+var version = "0.36.1-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
