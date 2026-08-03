@@ -423,7 +423,10 @@ body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden;
   display:flex;align-items:center;justify-content:center;min-height:100vh}
 @keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}
 .wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:24px}
-.col{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+/* Keep this clamp() byte-identical to HostedAuthForm.tsx / HostedAuthSkeleton.tsx
+   \u2014 three files render the same column and any drift shows up as a width jump
+   when the hosted page replaces this placeholder. */
+.col{width:100%;max-width:clamp(300px, 60vw, 420px);display:flex;flex-direction:column;gap:10px}
 .sk{background-color:rgba(255,255,255,0.04);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.14) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:8px}
 .strong{background-color:rgba(255,255,255,0.08);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.20) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:9px}
 .logo{width:64px;height:64px;border-radius:14px;margin-bottom:14px;background:rgba(255,255,255,0.06);border:1.5px solid rgba(255,255,255,0.1)}
@@ -589,7 +592,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.36.1-staging";
+var version = "0.36.2-staging";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
