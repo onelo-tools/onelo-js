@@ -568,7 +568,10 @@ var _AuthModal = class _AuthModal {
     const iframe = document.createElement("iframe");
     iframe.src = hostedUrl;
     iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:none;";
-    iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups");
+    iframe.setAttribute(
+      "sandbox",
+      "allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    );
     const cancelBtn = createModalCloseButton();
     this.failsafe = installFailsafeClose(cancelBtn);
     container.appendChild(skeleton);
@@ -592,7 +595,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.36.2-staging";
+var version = "0.37.0";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {

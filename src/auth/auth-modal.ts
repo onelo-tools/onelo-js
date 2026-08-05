@@ -247,7 +247,15 @@ export class AuthModal {
     const iframe = document.createElement('iframe')
     iframe.src = hostedUrl
     iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;'
-    iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-popups')
+    // allow-popups-to-escape-sandbox is required, not cosmetic: without it the
+    // OAuth popup inherits this sandbox (opaque origin, no storage), and
+    // Google/Apple reject the resulting context. With it, the popup is an
+    // ordinary top-level window — the only kind of context the providers allow
+    // themselves to be loaded in at all.
+    iframe.setAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox',
+    )
 
     // #40 hosted-close unification: the SDK must NOT draw an always-on ✕ over a
     // healthy hosted page. Sign-in is the app's FIRST screen — nothing sits
