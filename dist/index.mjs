@@ -387,6 +387,7 @@ function installFailsafeClose(btn, graceMs = 3500) {
 }
 
 // src/auth/auth-modal.ts
+var AUTH_COLUMN_WIDTH_PX = 300;
 var AUTH_SKELETON_HTML = `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -399,10 +400,11 @@ body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden;
   display:flex;align-items:center;justify-content:center;min-height:100vh}
 @keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}
 .wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:24px}
-/* Keep this width byte-identical to HostedAuthForm.tsx, HostedAuthSkeleton.tsx
+/* Width comes from AUTH_COLUMN_WIDTH_PX above \u2014 never type a number here.
+   Keep it identical to HostedAuthForm.tsx
    and OAuthButtons.tsx \u2014 four files render the same column and any drift shows
    up as a width jump when the hosted page replaces this placeholder. */
-.col{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+.col{width:100%;max-width:${AUTH_COLUMN_WIDTH_PX}px;display:flex;flex-direction:column;gap:10px}
 .sk{background-color:rgba(255,255,255,0.04);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.14) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:8px}
 .strong{background-color:rgba(255,255,255,0.08);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.20) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:9px}
 .logo{width:64px;height:64px;border-radius:14px;margin-bottom:14px;background:rgba(255,255,255,0.06);border:1.5px solid rgba(255,255,255,0.1)}
@@ -571,7 +573,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.37.2";
+var version = "0.39.0";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -1650,6 +1652,19 @@ var SDK_NAME = "@onelo/js";
 var MAX_BUFFER_SIZE = 200;
 var MAX_FLAGS = 100;
 var MAX_BREADCRUMBS = 100;
+var MAX_RETRY_AFTER_MS = 36e5;
+var _warn = (...args) => console.warn("[onelo.monitor]", ...args);
+function _parseRetryAfter(res) {
+  let raw = null;
+  try {
+    raw = res.headers?.get?.("Retry-After") ?? null;
+  } catch {
+  }
+  if (!raw) return 0;
+  const seconds = Number(raw.trim());
+  if (!Number.isFinite(seconds)) return 0;
+  return Math.max(0, Math.min(seconds * 1e3, MAX_RETRY_AFTER_MS));
+}
 var PLATFORM = "js";
 var SESSION_KEY = "onelo_monitor_session";
 function _resolveSessionId() {
@@ -1730,6 +1745,10 @@ var OneloMonitor = class {
     this.breadcrumbs = [];
     this.flushTimer = null;
     this.currentUserId = null;
+    /** Serialises all drains so a timer flush and an error flush can't overlap. */
+    this.flushChain = Promise.resolve();
+    /** Epoch ms until which we hold off sending (set from a 429 `Retry-After`). */
+    this.retryAfterUntil = 0;
     this.publishableKey = publishableKey;
     this.apiUrl = apiUrl;
     const app = {};
@@ -1746,6 +1765,7 @@ var OneloMonitor = class {
     }, 15e3);
     _activeMonitor = this;
     _installGlobalHandlers();
+    this._push("session_opened", true, void 0, void 0, void 0, "event");
   }
   /**
    * Returns a new meta object with always-on context merged in. SDK-owned keys
@@ -1831,28 +1851,109 @@ var OneloMonitor = class {
    * Flush the buffered events. `useBeacon` (set on the crash/unload path) prefers
    * `navigator.sendBeacon` + `keepalive` so the batch survives the page going
    * away — the browser analog of Swift's synchronous `_flushSync`.
+   *
+   * Drains are SERIALISED through one promise chain: the 15s timer, an error
+   * auto-flush and an explicit `flush()` must never drain concurrently, because
+   * a retried send now spans seconds and two overlapping drains would interleave
+   * batches (and the second would observe an empty buffer and report "sent").
    */
   async flush(useBeacon = false) {
+    this.flushChain = this.flushChain.then(() => this._drain(useBeacon)).catch(() => {
+    });
+    return this.flushChain;
+  }
+  async _drain(useBeacon) {
     if (this.buffer.length === 0) return;
-    const events = this.buffer.splice(0);
     const url = `${this.apiUrl}/api/sdk/monitor/events/batch`;
+    if (useBeacon) {
+      this._sendBeacon(url, this.buffer.splice(0));
+      return;
+    }
+    if (Date.now() < this.retryAfterUntil) return;
+    const events = this.buffer.splice(0);
     const body = JSON.stringify({ publishableKey: this.publishableKey, events });
-    if (useBeacon && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    if (await this._sendOnce(url, body) === "requeue") this._requeue(events);
+  }
+  /**
+   * Unload/crash path. This is genuinely BEST-EFFORT and CANNOT be retried: the
+   * document is going away, so there is no later tick in which to try again and
+   * no way to observe the result — `sendBeacon` only reports that the request was
+   * queued, never that the server accepted it, and a `keepalive` fetch outlives
+   * the JS context that would handle its response. Treat these events as
+   * "handed to the browser", NOT as delivered.
+   *
+   * Uses CORS-safelisted `text/plain`: `application/json` forces an OPTIONS
+   * preflight that browsers routinely drop during unload, discarding the very
+   * batch we're trying to save. The backend parses the JSON body regardless.
+   */
+  _sendBeacon(url, events) {
+    const body = JSON.stringify({ publishableKey: this.publishableKey, events });
+    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
       try {
         if (navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }))) return;
       } catch {
       }
     }
+    void fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body,
+      keepalive: true
+      // best-effort survival past unload; result is unobservable
+    }).catch(() => {
+    });
+  }
+  /**
+   * Deliver one batch, retrying network failures and 5xx with bounded
+   * exponential backoff. Returns true when the batch is settled (accepted, or
+   * rejected in a way retrying cannot fix); false when retries were exhausted
+   * and the caller should re-queue.
+   */
+  /** One POST. Never throws — classifies the result instead. */
+  async _sendOnce(url, body) {
+    let res;
     try {
-      await fetch(url, {
+      res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": useBeacon ? "text/plain" : "application/json" },
-        body,
-        keepalive: useBeacon
-        // best-effort survival past unload
+        headers: { "Content-Type": "application/json" },
+        body
       });
     } catch {
+      return "requeue";
     }
+    const status = res?.status ?? 0;
+    if (status >= 200 && status < 300) return "done";
+    if (status === 429) {
+      const waitMs = _parseRetryAfter(res);
+      if (waitMs > 0) this.retryAfterUntil = Math.max(this.retryAfterUntil, Date.now() + waitMs);
+      return "requeue";
+    }
+    if (status >= 400 && status < 500) {
+      _warn(`batch rejected with HTTP ${status} \u2014 dropping it (retrying would fail identically)`);
+      return "drop";
+    }
+    return "requeue";
+  }
+  /**
+   * Put an undelivered batch back at the FRONT of the buffer so the next flush
+   * retries it, then re-apply the cap.
+   *
+   * Priority policy under a sustained outage: NEWEST EVENTS WIN. The buffer is
+   * trimmed from the front, so the oldest re-queued events are the first to go.
+   * This matches `_push`'s newest-wins eviction, keeps memory bounded at
+   * MAX_BUFFER_SIZE regardless of how long the backend is down, and prevents a
+   * stuck batch from starving live telemetry. Drops are reported, never silent.
+   */
+  _requeue(events) {
+    this.buffer.unshift(...events);
+    let dropped = 0;
+    while (this.buffer.length > MAX_BUFFER_SIZE) {
+      this.buffer.shift();
+      dropped++;
+    }
+    _warn(
+      `batch not delivered \u2014 ${events.length} event(s) re-queued` + (dropped > 0 ? `, ${dropped} oldest dropped (buffer cap ${MAX_BUFFER_SIZE})` : "")
+    );
   }
   destroy() {
     if (this.flushTimer) {
@@ -1876,6 +1977,7 @@ var OneloMonitor = class {
       scrubbed["flags"] = Object.fromEntries(this.flags);
     }
     this.buffer.push({
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
       featureName,
       ok,
       durationMs,

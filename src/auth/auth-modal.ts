@@ -30,14 +30,27 @@ export type AuthPresentMode = 'popup' | 'embedded'
 // already uses: a `srcdoc` iframe so its @keyframes live in their own document
 // and need no host-page CSP allowance.
 //
-// Layout mirrors the hosted HostedAuthSkeleton (frontend/app/auth/hosted/
-// HostedAuthSkeleton.tsx) 1:1 — logo 64, heading 200×22, subheading 140×13,
-// then a 300px form column — so the cross-fade skeleton → hosted skeleton →
-// real form has zero layout shift.
+// Layout mirrors the hosted sign-in form 1:1 — logo 64, heading 200×22,
+// subheading 140×13, then the form column — so the cross-fade skeleton → real
+// form has zero layout shift.
 //
 // Social pills are deliberately OMITTED: the SDK can't know how many providers
 // are enabled before the page loads, and guessing would flash buttons that never
 // appear. The hosted skeleton makes the same choice when socialCount = 0.
+/**
+ * Width of the sign-in column, in px. MUST equal `AUTH_COLUMN_WIDTH_PX` in
+ * frontend/lib/auth-layout.ts — this skeleton is drawn directly underneath the
+ * hosted form, so any disagreement shows up as the column jumping width the moment
+ * the page takes over.
+ *
+ * The SDK ships separately from the page, so they cannot share a module at runtime.
+ * frontend/__tests__/auth-column-width.test.ts reads BOTH files and fails when the
+ * numbers diverge. That check exists because they DID diverge: 0.37.0 shipped
+ * `clamp(300px, 60vw, 420px)` here while the page had already standardised on 300px,
+ * so a 420px skeleton handed over to a 300px form — a visible 1.4× jump.
+ */
+const AUTH_COLUMN_WIDTH_PX = 300
+
 const AUTH_SKELETON_HTML = `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -50,10 +63,11 @@ body{background:#111111;font-family:-apple-system,sans-serif;overflow:hidden;
   display:flex;align-items:center;justify-content:center;min-height:100vh}
 @keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}
 .wrap{display:flex;flex-direction:column;align-items:center;width:100%;padding:24px}
-/* Keep this width byte-identical to HostedAuthForm.tsx, HostedAuthSkeleton.tsx
+/* Width comes from AUTH_COLUMN_WIDTH_PX above — never type a number here.
+   Keep it identical to HostedAuthForm.tsx
    and OAuthButtons.tsx — four files render the same column and any drift shows
    up as a width jump when the hosted page replaces this placeholder. */
-.col{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+.col{width:100%;max-width:${AUTH_COLUMN_WIDTH_PX}px;display:flex;flex-direction:column;gap:10px}
 .sk{background-color:rgba(255,255,255,0.04);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.14) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:8px}
 .strong{background-color:rgba(255,255,255,0.08);background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,0.20) 50%,rgba(255,255,255,0) 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite;border-radius:9px}
 .logo{width:64px;height:64px;border-radius:14px;margin-bottom:14px;background:rgba(255,255,255,0.06);border:1.5px solid rgba(255,255,255,0.1)}

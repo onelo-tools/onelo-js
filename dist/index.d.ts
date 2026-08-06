@@ -1,6 +1,124 @@
-import * as _onelo_core from '@onelo/core';
-import { OneloConfig, OneloSession, OneloEntitlement } from '@onelo/core';
-export { OneloConfig, OneloEntitlement, OneloError, OneloSession, OneloUser } from '@onelo/core';
+type UserRole = 'platform_owner' | 'creator' | 'member';
+/**
+ * Whether the user currently has an active paid entitlement.
+ * Mirrors the backend `user.entitlement` string ("active" | "none") and the
+ * Swift `OneloEntitlement` enum. A MISSING value must always decode to
+ * `'none'` — never treat an absent entitlement as active.
+ */
+type OneloEntitlement = 'active' | 'none';
+interface OneloUser {
+    id: string;
+    email: string | undefined;
+    role: UserRole;
+    tenantId: string | null;
+    /** Active-access flag from the backend; absent → 'none'. */
+    entitlement: OneloEntitlement;
+}
+interface OneloSession {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+    user: OneloUser;
+}
+interface OneloConfig {
+    /** Publishable key from Onelo dashboard (onelo_pk_live_...) */
+    publishableKey: string;
+    /** Onelo API base URL — required. Get this from your Onelo dashboard snippet. */
+    apiUrl: string;
+    /** App bundle identifier (e.g. "com.example.myapp"). Required for live apps with registered bundle IDs. */
+    bundleId?: string;
+    /**
+     * Custom URL scheme for deep-link callbacks — how the hosted auth/store/customer-portal
+     * flow returns to your app when it runs in the SYSTEM BROWSER (e.g. store upgrade, or a
+     * Stripe redirect that leaves the in-app WebView). MUST match the scheme you register
+     * natively: Android `<intent-filter>` `<data android:scheme="…"/>` + iOS Info.plist
+     * `CFBundleURLSchemes`. Use a scheme UNIQUE to your app (e.g. "myapp") to avoid
+     * collisions with other Onelo-based apps on the same device. Defaults to "onelorn".
+     */
+    callbackScheme?: string;
+    /**
+     * App release version (e.g. "1.2.0"). Auto-attached to every Monitor event as
+     * `meta.app.version` and surfaces as the "Release" column in Feature Health.
+     * Set it once here — never per-event.
+     */
+    appVersion?: string;
+    /**
+     * App build number (e.g. "420"). Auto-attached as `meta.app.build` and surfaces
+     * as the "App build" column in Feature Health. Set once here — never per-event.
+     */
+    appBuild?: string;
+    /**
+     * Deployment environment label for Monitor events ("production" | "staging" | "dev").
+     * Auto-attached as `meta.environment` and surfaces as the "Environment" column.
+     * A per-event `meta.environment` you set on an individual event overrides this default.
+     */
+    environment?: string;
+    /**
+     * Suppress the "no userId — call onelo.identify()" console warning that fires when
+     * features resolve in anonymous mode while targeted features exist. Set to true if
+     * your app is intentionally anonymous (e.g. a public marketing site with no auth).
+     * Default: false.
+     */
+    suppressIdentifyWarning?: boolean;
+    /**
+     * Explicit Feature environment: 'test' or 'live'. Forwarded to the backend so
+     * it resolves the matching feature snapshot regardless of the key prefix — set
+     * the SAME value here and in your backend SDK so a client and its server agree
+     * on env. On Node, omitting this falls back to the ONELO_FEATURE_ENVIRONMENT
+     * env var; if still unset the backend uses the key prefix (old behavior).
+     * See docs/architecture/feature-environment-explicit.md.
+     */
+    featureEnvironment?: 'test' | 'live';
+    /**
+     * Auto-present the blocking legal-consent gate (Terms/Privacy updates) on
+     * sign-in and when the backend pushes `legal.consent_required`. Default: true.
+     * Set to false to drive your own UI via `onelo.consent.requiredConsents()` /
+     * `onelo.consent.onConsentRequired()`.
+     */
+    autoPresentConsentGate?: boolean;
+    /**
+     * Status returned by `onelo.features.feature(name)` for a slug not (yet) in the
+     * resolved snapshot. Fail-closed 'hidden' by default — a feature instrumented in
+     * code but not enabled in the dashboard stays hidden in production. Set 'enabled'
+     * in dev to preview new gates before toggling them. 1:1 with Swift
+     * `Onelo(featureDefaultStatus:)`. (Read by the React Native, JS, and Electron SDKs.)
+     */
+    featureDefaultStatus?: 'enabled' | 'disabled' | 'greyed' | 'hidden' | 'upsell' | 'new' | 'beta' | 'coming_soon';
+    /**
+     * When true (default), the SDK force-refreshes its feature snapshot whenever the
+     * app returns to the FOREGROUND, so a Deploy that landed while backgrounded
+     * reconciles immediately instead of waiting for the poll. Set false to rely on
+     * poll + SSE only. 1:1 with Swift `Onelo(autoLifecycleRefresh:)`. (Currently read
+     * by the React Native SDK.)
+     */
+    autoLifecycleRefresh?: boolean;
+}
+declare class OneloError extends Error {
+    readonly code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout';
+    constructor(code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout', message: string);
+    static notAuthenticated(): OneloError;
+    static hostedFlowRequired(): OneloError;
+    /**
+     * The DEVELOPER's app is on a plan that doesn't allow custom auth UI. This is
+     * a build-time configuration error — the fix is to use the hosted flow
+     * (loadAuthView) or upgrade the Onelo plan. NOT for an end-user's lapsed
+     * subscription — see noActivePlan().
+     */
+    static planRequired(): OneloError;
+    /**
+     * The END USER has no active subscription (it lapsed or was cancelled) — the
+     * backend cleared the session. This is NOT a config error and NOT an account
+     * revocation: route the user to your store / upgrade flow to re-subscribe.
+     */
+    static noActivePlan(): OneloError;
+    static invalidKey(msg: string): OneloError;
+    static network(msg: string): OneloError;
+    static server(msg: string): OneloError;
+    static timeout(msg: string): OneloError;
+    static cancelled(): OneloError;
+    static revoked(): OneloError;
+    static userRevoked(): OneloError;
+}
 
 type AuthPresentMode = 'popup' | 'embedded';
 
@@ -418,6 +536,10 @@ declare class OneloMonitor {
     private readonly breadcrumbs;
     private flushTimer;
     private currentUserId;
+    /** Serialises all drains so a timer flush and an error flush can't overlap. */
+    private flushChain;
+    /** Epoch ms until which we hold off sending (set from a 429 `Retry-After`). */
+    private retryAfterUntil;
     /** Pre-built static meta merged into every event (sdk + app). Computed once. */
     private readonly staticMeta;
     private readonly environment?;
@@ -467,8 +589,46 @@ declare class OneloMonitor {
      * Flush the buffered events. `useBeacon` (set on the crash/unload path) prefers
      * `navigator.sendBeacon` + `keepalive` so the batch survives the page going
      * away — the browser analog of Swift's synchronous `_flushSync`.
+     *
+     * Drains are SERIALISED through one promise chain: the 15s timer, an error
+     * auto-flush and an explicit `flush()` must never drain concurrently, because
+     * a retried send now spans seconds and two overlapping drains would interleave
+     * batches (and the second would observe an empty buffer and report "sent").
      */
     flush(useBeacon?: boolean): Promise<void>;
+    private _drain;
+    /**
+     * Unload/crash path. This is genuinely BEST-EFFORT and CANNOT be retried: the
+     * document is going away, so there is no later tick in which to try again and
+     * no way to observe the result — `sendBeacon` only reports that the request was
+     * queued, never that the server accepted it, and a `keepalive` fetch outlives
+     * the JS context that would handle its response. Treat these events as
+     * "handed to the browser", NOT as delivered.
+     *
+     * Uses CORS-safelisted `text/plain`: `application/json` forces an OPTIONS
+     * preflight that browsers routinely drop during unload, discarding the very
+     * batch we're trying to save. The backend parses the JSON body regardless.
+     */
+    private _sendBeacon;
+    /**
+     * Deliver one batch, retrying network failures and 5xx with bounded
+     * exponential backoff. Returns true when the batch is settled (accepted, or
+     * rejected in a way retrying cannot fix); false when retries were exhausted
+     * and the caller should re-queue.
+     */
+    /** One POST. Never throws — classifies the result instead. */
+    private _sendOnce;
+    /**
+     * Put an undelivered batch back at the FRONT of the buffer so the next flush
+     * retries it, then re-apply the cap.
+     *
+     * Priority policy under a sustained outage: NEWEST EVENTS WIN. The buffer is
+     * trimmed from the front, so the oldest re-queued events are the first to go.
+     * This matches `_push`'s newest-wins eviction, keeps memory bounded at
+     * MAX_BUFFER_SIZE regardless of how long the backend is down, and prevents a
+     * stuck batch from starving live telemetry. Drops are reported, never silent.
+     */
+    private _requeue;
     destroy(): void;
     private _push;
     /**
@@ -679,7 +839,7 @@ declare class Onelo {
      */
     loadAuthView(options?: {
         mode?: AuthPresentMode;
-    }): Promise<_onelo_core.OneloSession | null>;
+    }): Promise<OneloSession | null>;
     /**
      * Only needed when NOT using Onelo Auth (own auth system). Pass `userIdHash`
      * (HMAC-SHA256 computed on YOUR server, `"user:"+userId`) to satisfy Secure
@@ -709,4 +869,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { type AuthPresentMode, type FeatureReason, FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, OneloConsent, type OneloConsentEnforcement, type OneloConsentRequirement, OneloCustomerPortal, OneloFeatures, OneloFeaturesError, type OneloFeaturesErrorCode, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, OneloWaitlist, type UpgradeHint };
+export { type AuthPresentMode, type FeatureReason, FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, type OneloConfig, OneloConsent, type OneloConsentEnforcement, type OneloConsentRequirement, OneloCustomerPortal, type OneloEntitlement, OneloError, OneloFeatures, OneloFeaturesError, type OneloFeaturesErrorCode, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, type OneloSession, type OneloUser, OneloWaitlist, type UpgradeHint };

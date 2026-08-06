@@ -14,6 +14,15 @@ class WindowStub {
 const win = new WindowStub()
 let fetchMock: ReturnType<typeof vi.fn>
 
+/** Constructs a monitor and strips the auto-emitted `session_opened` event
+ *  (fired unconditionally at construction) so these tests' index-0 assertions
+ *  see only what the test itself pushes. */
+function freshMonitor(...args: ConstructorParameters<typeof OneloMonitor>): OneloMonitor {
+  const m = new OneloMonitor(...args)
+  ;(m as unknown as { buffer: unknown[] }).buffer.length = 0
+  return m
+}
+
 describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 1)', () => {
   // Install window ONCE so the module-level handlers bind to this stub.
   beforeAll(() => { vi.stubGlobal('window', win) })
@@ -24,7 +33,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('scrubs secrets from meta before they leave the browser', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.event('checkout', { ok: true, meta: { password: 'p', note: 'fine', log: 'used sk_live_ABCDEFGHIJKLMNOP' } })
     await m.flush()
     const body = JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string)
@@ -37,7 +46,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('scrubs secrets from the error string', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.event('pay', { ok: false, error: 'failed with Bearer abc123.def' }) // ok:false auto-flushes
     await tick()
     const body = JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string)
@@ -46,7 +55,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('flag↔error: snapshots active flags into meta.flags on ERROR events only', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.recordFlag('checkout-v2', 'enabled')
     m.recordFlag('dark-mode', 'hidden')
 
@@ -66,7 +75,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('recordFlag is LRU-capped at 100 (re-record survives eviction)', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     for (let i = 0; i < 100; i++) m.recordFlag(`f${i}`, 'enabled') // f0..f99
     m.recordFlag('f0', 'disabled') // re-record oldest → moves to newest + updates value
     m.recordFlag('f100', 'enabled') // new key → evicts the now-oldest (f1)
@@ -83,7 +92,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('capture(): breadcrumbs + stack + errorType + flags + device attach on the error', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.breadcrumb('user clicked checkout', { category: 'navigation' })
     m.breadcrumb('token was Bearer abc123.def') // free text → scrubbed
     m.recordFlag('checkout-v2', 'enabled')
@@ -105,7 +114,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('ok events carry NO breadcrumbs/device/flags (error-only enrichment)', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.breadcrumb('crumb')
     m.recordFlag('f', 'enabled')
     m.event('ok-op', { ok: true })
@@ -120,7 +129,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   it('global-error path delivers via a CORS-safe text/plain sendBeacon', async () => {
     const beacon = vi.fn().mockReturnValue(true)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
-    const m = new OneloMonitor(PK, API) // becomes active
+    const m = freshMonitor(PK, API) // becomes active
     m.event('pre', { ok: true }) // buffer without flushing
 
     win.dispatch('error', { message: 'boom' }) // → global_error → flush(useBeacon=true)
@@ -136,7 +145,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   it('destroy() flushes the final batch via text/plain sendBeacon (teardown-safe, no preflight)', async () => {
     const beacon = vi.fn().mockReturnValue(true)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     m.event('pre', { ok: true }) // ok:true → buffered, not auto-flushed
     m.destroy()                  // teardown → must use beacon, not a preflighted fetch
     await tick()
@@ -148,7 +157,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('breadcrumbs ring-buffer caps at 100', async () => {
-    const m = new OneloMonitor(PK, API)
+    const m = freshMonitor(PK, API)
     for (let i = 0; i < 130; i++) m.breadcrumb(`c${i}`)
     m.event('err', { ok: false, error: 'x' })
     await tick()
@@ -159,8 +168,8 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
   })
 
   it('dual-instance: latest-wins routing, no dead-instance routing after destroy, re-arm', async () => {
-    const m1 = new OneloMonitor(PK, API) // installs handlers, active = m1
-    const m2 = new OneloMonitor(PK, API) // active = m2 (latest-wins)
+    const m1 = freshMonitor(PK, API) // installs handlers, active = m1
+    const m2 = freshMonitor(PK, API) // active = m2 (latest-wins)
 
     fetchMock.mockClear()
     win.dispatch('error', { message: 'boom' })
@@ -173,7 +182,7 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
     await tick()
     expect(fetchMock, 'no routing into a destroyed instance').not.toHaveBeenCalled()
 
-    const m3 = new OneloMonitor(PK, API) // re-arms → active = m3
+    const m3 = freshMonitor(PK, API) // re-arms → active = m3
     fetchMock.mockClear()
     win.dispatch('error', { message: 'rearmed' })
     await tick()

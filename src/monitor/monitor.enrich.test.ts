@@ -21,6 +21,9 @@ async function captureBatch(
   act: (m: OneloMonitor) => void | Promise<void>,
 ): Promise<{ publishableKey: string; events: Array<Record<string, unknown>> }> {
   const monitor = new OneloMonitor(PK, API, context)
+  // Strip the auto-emitted `session_opened` event (fired unconditionally at
+  // construction) so batch assertions below see only what `act` pushes.
+  ;(monitor as unknown as { buffer: unknown[] }).buffer.length = 0
   try {
     await act(monitor)
     await monitor.flush()

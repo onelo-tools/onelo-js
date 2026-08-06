@@ -1,6 +1,6 @@
 {
   "name": "@onelo/js",
-  "version": "0.37.2",
+  "version": "0.39.0",
   "description": "Onelo Web SDK",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -9,8 +9,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "build": "tsup src/index.ts --format cjs,esm --dts --dts-resolve --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --dts-resolve --watch",
     "test": "vitest run"
   },
   "devDependencies": {

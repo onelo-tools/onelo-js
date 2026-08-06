@@ -21,6 +21,16 @@ const SDK_NAME = '@onelo/js'
 type EventSource = 'feature_call' | 'track' | 'event' | 'global_error'
 
 interface BufferedEvent {
+  /**
+   * ISO-8601 UTC, stamped when the event HAPPENED — not when it is sent.
+   *
+   * The backend clamps this to a 1h staleness window and falls back to ingest
+   * time when it is absent (`_resolve_event_ts` in sdk_monitor.py), so without
+   * it a batch that waited out an outage is recorded as having happened the
+   * moment the outage ended. Parity with onelo-python / node / php, which have
+   * always sent it.
+   */
+  ts: string
   featureName: string
   ok: boolean
   durationMs?: number
@@ -35,6 +45,39 @@ interface BufferedEvent {
 const MAX_BUFFER_SIZE = 200
 const MAX_FLAGS = 100 // LRU cap on the flag snapshot (parity with Swift's MonitorFeatureFlagBuffer)
 const MAX_BREADCRUMBS = 100 // ring buffer (parity with Swift's MonitorBreadcrumbBuffer)
+// Delivery policy: ONE attempt per flush. A batch the server did not accept goes
+// back in the buffer and rides the next 15s tick — the timer IS the retry, so a
+// backend outage never multiplies inbound request volume (an in-flight retry
+// loop would have tripled it at the worst possible moment) and a drain always
+// stays milliseconds long, which is what keeps every teardown path bounded.
+const MAX_RETRY_AFTER_MS = 3_600_000
+
+/**
+ * What one delivery attempt means for the batch:
+ * `done`    — the server ACCEPTED it. Settled; never send again.
+ * `requeue` — the server did NOT take it (429, 5xx, network). Put it back and
+ *             let the next flush carry it.
+ * `drop`    — permanently rejected (4xx other than 429: bad key, malformed
+ *             payload). Re-sending would fail identically forever, so we discard
+ *             it — but LOUDLY, never silently.
+ */
+type SendOutcome = 'done' | 'requeue' | 'drop'
+
+// eslint-disable-next-line no-console
+const _warn = (...args: unknown[]): void => console.warn('[onelo.monitor]', ...args)
+
+/** Seconds-form `Retry-After` → ms, clamped. Tolerates a header-less response
+ *  (test doubles, opaque responses) — never throws. */
+function _parseRetryAfter(res: Response): number {
+  let raw: string | null = null
+  try {
+    raw = res.headers?.get?.('Retry-After') ?? null
+  } catch { /* no headers — treat as absent */ }
+  if (!raw) return 0
+  const seconds = Number(raw.trim())
+  if (!Number.isFinite(seconds)) return 0
+  return Math.max(0, Math.min(seconds * 1000, MAX_RETRY_AFTER_MS))
+}
 
 const PLATFORM = 'js'
 const SESSION_KEY = 'onelo_monitor_session'
@@ -147,6 +190,10 @@ export class OneloMonitor {
   private readonly breadcrumbs: Breadcrumb[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private currentUserId: string | null = null
+  /** Serialises all drains so a timer flush and an error flush can't overlap. */
+  private flushChain: Promise<void> = Promise.resolve()
+  /** Epoch ms until which we hold off sending (set from a 429 `Retry-After`). */
+  private retryAfterUntil = 0
   /** Pre-built static meta merged into every event (sdk + app). Computed once. */
   private readonly staticMeta: Record<string, unknown>
   private readonly environment?: string
@@ -168,6 +215,13 @@ export class OneloMonitor {
     // install the shared handlers once.
     _activeMonitor = this
     _installGlobalHandlers()
+    // Auto-emit one unconditional event per construction. An app that gates
+    // every instrumented operation behind sign-in/paywall/consent would
+    // otherwise emit NOTHING on a cold start — the dashboard would look
+    // "not integrated" even though every line of the snippet was followed
+    // correctly. This event needs no gate to exist: it fires the moment the
+    // SDK is constructed, so Feature Health always has at least one row.
+    this._push('session_opened', true, undefined, undefined, undefined, 'event')
   }
 
   /**
@@ -263,33 +317,124 @@ export class OneloMonitor {
    * Flush the buffered events. `useBeacon` (set on the crash/unload path) prefers
    * `navigator.sendBeacon` + `keepalive` so the batch survives the page going
    * away — the browser analog of Swift's synchronous `_flushSync`.
+   *
+   * Drains are SERIALISED through one promise chain: the 15s timer, an error
+   * auto-flush and an explicit `flush()` must never drain concurrently, because
+   * a retried send now spans seconds and two overlapping drains would interleave
+   * batches (and the second would observe an empty buffer and report "sent").
    */
   async flush(useBeacon = false): Promise<void> {
+    this.flushChain = this.flushChain.then(() => this._drain(useBeacon)).catch(() => {})
+    return this.flushChain
+  }
+
+  private async _drain(useBeacon: boolean): Promise<void> {
     if (this.buffer.length === 0) return
-    const events = this.buffer.splice(0)
     const url = `${this.apiUrl}/api/sdk/monitor/events/batch`
+    if (useBeacon) {
+      this._sendBeacon(url, this.buffer.splice(0))
+      return
+    }
+    // Server told us to back off (429/Retry-After). Leave the events buffered —
+    // they'll go out on the next flush after the hold-off expires.
+    if (Date.now() < this.retryAfterUntil) return
+    const events = this.buffer.splice(0)
     const body = JSON.stringify({ publishableKey: this.publishableKey, events })
-    // On the unload path use CORS-safelisted `text/plain`: `application/json`
-    // forces an OPTIONS preflight that browsers routinely drop during unload,
-    // discarding the very batch we're trying to save. The backend parses the
-    // JSON body regardless of content-type.
-    if (useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    // ONE attempt. Anything the server did not accept goes straight back in the
+    // buffer and rides the next 15s tick — the flush timer IS the retry.
+    if (await this._sendOnce(url, body) === 'requeue') this._requeue(events)
+  }
+
+  /**
+   * Unload/crash path. This is genuinely BEST-EFFORT and CANNOT be retried: the
+   * document is going away, so there is no later tick in which to try again and
+   * no way to observe the result — `sendBeacon` only reports that the request was
+   * queued, never that the server accepted it, and a `keepalive` fetch outlives
+   * the JS context that would handle its response. Treat these events as
+   * "handed to the browser", NOT as delivered.
+   *
+   * Uses CORS-safelisted `text/plain`: `application/json` forces an OPTIONS
+   * preflight that browsers routinely drop during unload, discarding the very
+   * batch we're trying to save. The backend parses the JSON body regardless.
+   */
+  private _sendBeacon(url: string, events: BufferedEvent[]): void {
+    const body = JSON.stringify({ publishableKey: this.publishableKey, events })
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
       try {
         if (navigator.sendBeacon(url, new Blob([body], { type: 'text/plain' }))) return
       } catch {
-        // fall through to fetch
+        // fall through to a keepalive fetch
       }
     }
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+      keepalive: true, // best-effort survival past unload; result is unobservable
+    }).catch(() => {
+      // Nothing to do — the page is unloading, there is no next attempt.
+    })
+  }
+
+  /**
+   * Deliver one batch, retrying network failures and 5xx with bounded
+   * exponential backoff. Returns true when the batch is settled (accepted, or
+   * rejected in a way retrying cannot fix); false when retries were exhausted
+   * and the caller should re-queue.
+   */
+  /** One POST. Never throws — classifies the result instead. */
+  private async _sendOnce(url: string, body: string): Promise<SendOutcome> {
+    let res: Response
     try {
-      await fetch(url, {
+      res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': useBeacon ? 'text/plain' : 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body,
-        keepalive: useBeacon, // best-effort survival past unload
       })
     } catch {
-      // silently drop — monitoring must never break the app
+      return 'requeue' // network / DNS / CORS-abort — the batch never landed
     }
+    // `fetch` does NOT reject on an HTTP error status, so this classification is
+    // the only thing standing between a 503 and a silently lost batch.
+    const status = res?.status ?? 0
+    if (status >= 200 && status < 300) return 'done'
+    if (status === 429) {
+      const waitMs = _parseRetryAfter(res)
+      if (waitMs > 0) this.retryAfterUntil = Math.max(this.retryAfterUntil, Date.now() + waitMs)
+      // Rate limited: the server did NOT accept these events. Re-queue them; the
+      // hold-off above stops the next flushes until the window reopens.
+      return 'requeue'
+    }
+    if (status >= 400 && status < 500) {
+      // 401 bad key, 403 forbidden, 422 malformed — identical every time, so
+      // re-queueing would wedge the buffer forever. Drop, but say so.
+      _warn(`batch rejected with HTTP ${status} — dropping it (retrying would fail identically)`)
+      return 'drop'
+    }
+    return 'requeue' // 5xx (and anything unrecognised) — server-side; try next flush
+  }
+
+  /**
+   * Put an undelivered batch back at the FRONT of the buffer so the next flush
+   * retries it, then re-apply the cap.
+   *
+   * Priority policy under a sustained outage: NEWEST EVENTS WIN. The buffer is
+   * trimmed from the front, so the oldest re-queued events are the first to go.
+   * This matches `_push`'s newest-wins eviction, keeps memory bounded at
+   * MAX_BUFFER_SIZE regardless of how long the backend is down, and prevents a
+   * stuck batch from starving live telemetry. Drops are reported, never silent.
+   */
+  private _requeue(events: BufferedEvent[]): void {
+    this.buffer.unshift(...events)
+    let dropped = 0
+    while (this.buffer.length > MAX_BUFFER_SIZE) {
+      this.buffer.shift()
+      dropped++
+    }
+    _warn(
+      `batch not delivered — ${events.length} event(s) re-queued` +
+        (dropped > 0 ? `, ${dropped} oldest dropped (buffer cap ${MAX_BUFFER_SIZE})` : ''),
+    )
   }
 
   destroy(): void {
@@ -337,6 +482,7 @@ export class OneloMonitor {
       scrubbed['flags'] = Object.fromEntries(this.flags)
     }
     this.buffer.push({
+      ts: new Date().toISOString(),
       featureName,
       ok,
       durationMs,
