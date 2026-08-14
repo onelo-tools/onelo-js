@@ -1,4 +1,5 @@
 import { generateCodeVerifier, generateCodeChallenge } from '@onelo/core'
+import { hostOS } from '../core/host-os'
 import { httpGet, httpPost, checkHostedFlowRequired } from '@onelo/core'
 import { mapSession } from '@onelo/core'
 import { TokenStorage, TOKEN_KEYS } from '../core/storage'
@@ -84,7 +85,14 @@ export class OneloAuth {
       this.pkceVerifier = verifier
       const challenge = await generateCodeChallenge(verifier)
       const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}`
-      const { status, json } = await httpGet(url, { 'X-SDK-Version': SDK_VERSION })
+      // X-Onelo-OS decides whether the "Require plan on sign-up" gate applies:
+      // inside a Capacitor/Cordova iOS shell this SDK runs in an App Store app,
+      // where showing the store in-app is not allowed. A plain browser reports
+      // 'web' and nothing changes. See core/host-os.ts.
+      const { status, json } = await httpGet(url, {
+        'X-SDK-Version': SDK_VERSION,
+        'X-Onelo-OS': hostOS(),
+      })
       if (status === 401 || status === 404) throw OneloError.invalidKey('Server rejected the key')
       if (status !== 200) throw OneloError.server(`Config request failed: HTTP ${status}`)
       const j = json as Record<string, unknown>

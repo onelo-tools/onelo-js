@@ -293,6 +293,24 @@ module.exports = __toCommonJS(index_exports);
 
 // src/auth/auth.ts
 var import_core2 = __toESM(require_dist());
+
+// src/core/host-os.ts
+function hostOS() {
+  if (typeof window === "undefined") return "web";
+  const w = window;
+  const cap = w.Capacitor;
+  if (cap) {
+    const p = (typeof cap.getPlatform === "function" ? cap.getPlatform() : cap.platform) ?? "";
+    if (p === "ios") return "ios";
+    if (p === "android") return "android";
+  }
+  const cordovaPlatform = w.cordova?.platformId;
+  if (cordovaPlatform === "ios") return "ios";
+  if (cordovaPlatform === "android") return "android";
+  return "web";
+}
+
+// src/auth/auth.ts
 var import_core3 = __toESM(require_dist());
 var import_core4 = __toESM(require_dist());
 
@@ -597,7 +615,7 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.39.0";
+var version = "0.40.0";
 
 // src/auth/auth.ts
 var _OneloAuth = class _OneloAuth {
@@ -652,7 +670,10 @@ var _OneloAuth = class _OneloAuth {
       this.pkceVerifier = verifier;
       const challenge = await (0, import_core2.generateCodeChallenge)(verifier);
       const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}`;
-      const { status, json } = await (0, import_core3.httpGet)(url, { "X-SDK-Version": version });
+      const { status, json } = await (0, import_core3.httpGet)(url, {
+        "X-SDK-Version": version,
+        "X-Onelo-OS": hostOS()
+      });
       if (status === 401 || status === 404) throw import_core5.OneloError.invalidKey("Server rejected the key");
       if (status !== 200) throw import_core5.OneloError.server(`Config request failed: HTTP ${status}`);
       const j = json;
