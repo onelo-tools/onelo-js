@@ -30,6 +30,7 @@ var require_types = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.OneloError = void 0;
+    exports.extractErrorCode = extractErrorCode2;
     var OneloError6 = class _OneloError extends Error {
       constructor(code, message) {
         super(message);
@@ -82,6 +83,22 @@ var require_types = __commonJS({
       }
     };
     exports.OneloError = OneloError6;
+    function extractErrorCode2(json) {
+      if (!json || typeof json !== "object")
+        return void 0;
+      const body = json;
+      if (typeof body.error === "string" && body.error)
+        return body.error;
+      const detail = body.detail;
+      if (typeof detail === "string" && detail)
+        return detail;
+      if (detail && typeof detail === "object") {
+        const nested = detail.error;
+        if (typeof nested === "string" && nested)
+          return nested;
+      }
+      return void 0;
+    }
   }
 });
 
@@ -190,7 +207,11 @@ var require_session = __commonJS({
           tenantId: appMeta["tenant_id"] ?? user["tenant_id"] ?? null,
           // Backend sends "active" | "none"; absent MUST decode to 'none' (never
           // treat a missing entitlement as active). Round-trips via USER_JSON.
-          entitlement: user["entitlement"] === "active" ? "active" : "none"
+          entitlement: user["entitlement"] === "active" ? "active" : "none",
+          // Undefined (not false) when the backend did not send it: "the server did
+          // not say" and "the server said no" are different, and only the first may
+          // fall back to the old client-side derivation.
+          allowedIn: typeof user["allowed_in"] === "boolean" ? user["allowed_in"] : void 0
         }
       };
     }
@@ -198,7 +219,22 @@ var require_session = __commonJS({
       ACCESS_TOKEN: "onelo_access_token",
       REFRESH_TOKEN: "onelo_refresh_token",
       EXPIRES_AT: "onelo_expires_at",
-      USER_JSON: "onelo_user"
+      USER_JSON: "onelo_user",
+      /**
+       * PKCE verifier for an OUTSTANDING magic link.
+       *
+       * Every other verifier this SDK uses lives in memory, which is correct for
+       * flows that finish in the same page. A magic link does not: the email opens
+       * a NEW tab (often after a relaunch), so an in-memory verifier is gone by the
+       * time the code comes back and /hosted-callback would 401 on a link that is
+       * already spent — locking the user out with no recovery. That is exactly why
+       * magic links shipped WITHOUT a challenge.
+       *
+       * Persisting it is what makes the binding possible on the web: the new tab is
+       * the same origin, so it can read this back. Deleted the moment the exchange
+       * finishes or fails, and cleared with the rest on sign-out.
+       */
+      MAGIC_LINK_VERIFIER: "onelo_magic_link_verifier"
     };
   }
 });
@@ -299,34 +335,165 @@ var TokenStorage = class {
   }
   async get(key) {
     if (this.useLocalStorage) {
-      return localStorage.getItem(key);
+      try {
+        return localStorage.getItem(key) ?? this.memory.get(key) ?? null;
+      } catch {
+        this.useLocalStorage = false;
+      }
     }
     return this.memory.get(key) ?? null;
   }
   async set(key, value) {
-    if (this.useLocalStorage) {
+    this.memory.set(key, value);
+    if (!this.useLocalStorage) return;
+    try {
       localStorage.setItem(key, value);
-    } else {
-      this.memory.set(key, value);
+    } catch (err) {
+      this.useLocalStorage = false;
+      console.warn(
+        "[Onelo] localStorage is unavailable (private browsing, disabled storage, or quota) \u2014 the session will live for this tab only and a reload will sign the user out. Original error:",
+        err
+      );
     }
   }
   async delete(key) {
-    if (this.useLocalStorage) {
+    this.memory.delete(key);
+    if (!this.useLocalStorage) return;
+    try {
       localStorage.removeItem(key);
-    } else {
-      this.memory.delete(key);
+    } catch (err) {
+      console.warn("[Onelo] could not remove a stored value:", err);
     }
   }
   async clear() {
-    if (this.useLocalStorage) {
-      for (const key of Object.values(import_core.TOKEN_KEYS)) {
+    this.memory.clear();
+    if (!this.useLocalStorage) return;
+    for (const key of Object.values(import_core.TOKEN_KEYS)) {
+      try {
         localStorage.removeItem(key);
+      } catch (err) {
+        console.warn("[Onelo] could not clear stored session:", err);
       }
-    } else {
-      this.memory.clear();
     }
   }
 };
+
+// src/core/session-channel.ts
+var CHANNEL = "onelo_auth";
+var SESSION_CREATED = "onelo:session-created";
+function open() {
+  if (typeof BroadcastChannel === "undefined") return null;
+  try {
+    return new BroadcastChannel(CHANNEL);
+  } catch {
+    return null;
+  }
+}
+function publishSessionCreated(surfaceUrl) {
+  const ch = open();
+  if (!ch) return;
+  try {
+    ch.postMessage({ type: SESSION_CREATED, surfaceUrl });
+  } finally {
+    ch.close();
+  }
+}
+function subscribeSessionCreated(onSession) {
+  const ch = open();
+  if (!ch) return () => {
+  };
+  const handler = (e) => {
+    if (e.data?.type !== SESSION_CREATED) return;
+    onSession(e.data?.surfaceUrl);
+  };
+  ch.addEventListener("message", handler);
+  return () => {
+    ch.removeEventListener("message", handler);
+    try {
+      ch.close();
+    } catch {
+    }
+  };
+}
+
+// src/core/handed-over-notice.ts
+var ID = "onelo-handed-over";
+var WATCH_MS = 1e4;
+var watcher = null;
+function stopWatching() {
+  watcher?.disconnect();
+  watcher = null;
+}
+function coverPage() {
+  render("Signing you in\u2026", null, { watch: true, pending: true });
+}
+function removeCover() {
+  if (typeof document === "undefined") return;
+  stopWatching();
+  document.getElementById(ID)?.remove();
+}
+function showHandedOverNotice(appName) {
+  render("You're signed in", appName ?? null, { watch: true });
+}
+function render(heading, appName, { watch = false, pending = false } = {}) {
+  if (typeof document === "undefined" || !document.body) return;
+  const existing = document.getElementById(ID);
+  if (existing) {
+    const [h, p] = existing.children;
+    if (h) h.textContent = heading;
+    if (p) p.textContent = bodyText(appName, pending);
+    if (watch) keepAttached(existing);
+    return;
+  }
+  const root = document.createElement("div");
+  root.id = ID;
+  root.setAttribute("role", "status");
+  Object.assign(root.style, {
+    position: "fixed",
+    inset: "0",
+    // Opaque, not a translucent scrim: the app underneath has already booted
+    // and must not be readable or clickable through this.
+    background: "#111111",
+    color: "#ffffff",
+    zIndex: "2147483647",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    textAlign: "center",
+    padding: "24px",
+    font: '400 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  });
+  const title = document.createElement("h1");
+  title.textContent = heading;
+  Object.assign(title.style, {
+    margin: "0 0 8px",
+    font: "600 18px/1.3 inherit"
+  });
+  const body = document.createElement("p");
+  body.textContent = bodyText(appName, pending);
+  Object.assign(body.style, {
+    margin: "0",
+    maxWidth: "320px",
+    opacity: "0.6"
+  });
+  root.append(title, body);
+  document.body.appendChild(root);
+  if (watch) keepAttached(root);
+}
+function bodyText(appName, pending) {
+  if (pending) return "";
+  return appName ? `Continue in the ${appName} tab you started from \u2014 you can close this one.` : "Continue in the tab you started from \u2014 you can close this one.";
+}
+function keepAttached(root) {
+  if (typeof MutationObserver === "undefined") return;
+  stopWatching();
+  watcher = new MutationObserver(() => {
+    if (!document.getElementById(ID) && document.body) document.body.appendChild(root);
+  });
+  watcher.observe(document.body, { childList: true });
+  setTimeout(stopWatching, WATCH_MS);
+}
 
 // src/core/modal-close-button.ts
 function createModalCloseButton() {
@@ -457,6 +624,7 @@ var _AuthModal = class _AuthModal {
     this.popup = null;
     this.popupPoll = null;
     this.messageHandler = null;
+    this.unsubscribeSession = null;
     this.loadWatchdog = null;
     /** Fail-safe ✕ controller for the embedded overlay (see failsafe-close.ts). */
     this.failsafe = null;
@@ -469,7 +637,14 @@ var _AuthModal = class _AuthModal {
       this.loadWatchdog = null;
     }
   }
-  open(hostedUrl, mode = "popup") {
+  /**
+   * @param watchCrossTabSession Settle with `{type:'session'}` if ANOTHER tab
+   *   signs this user in while the modal is open. Opt-in, and only the auth
+   *   flow asks for it: the STORE is also presented through this modal, and a
+   *   sign-in happening elsewhere is no reason to close a checkout the buyer is
+   *   part-way through.
+   */
+  open(hostedUrl, mode = "popup", { watchCrossTabSession = false } = {}) {
     return new Promise((resolve) => {
       const allowedOrigin = new URL(hostedUrl).origin;
       let settled = false;
@@ -493,6 +668,11 @@ var _AuthModal = class _AuthModal {
         else if (data?.type === "onelo:error") settle({ type: "error", message: String(data.message ?? "Auth error") });
       };
       window.addEventListener("message", this.messageHandler);
+      if (watchCrossTabSession) {
+        this.unsubscribeSession = subscribeSessionCreated(
+          (surfaceUrl) => settle({ type: "session", surfaceUrl })
+        );
+      }
       if (mode === "popup") {
         this.popup = window.open(
           hostedUrl,
@@ -512,9 +692,18 @@ var _AuthModal = class _AuthModal {
         const cancelBtn = this.overlay.querySelector("[data-onelo-cancel]");
         cancelBtn?.addEventListener("click", () => settle({ type: "cancelled" }));
         this.loadWatchdog = setTimeout(() => {
+          let hint = `check this origin is in the app's allowed origins, or use loadAuthView({ mode: "popup" })`;
+          try {
+            const pageProtocol = window.location.protocol;
+            const hostedProtocol = new URL(hostedUrl).protocol;
+            if (pageProtocol === "http:" && hostedProtocol === "https:") {
+              hint = `this page is served over ${pageProtocol}// while the hosted page is ${hostedProtocol}// \u2014 browsers block frame access across protocols. Serve your dev server over https, or use loadAuthView({ mode: "popup" }). This is NOT an allowed-origins problem`;
+            }
+          } catch {
+          }
           settle({
             type: "error",
-            message: `The hosted page could not be loaded inline \u2014 check this origin is in the app's allowed origins, or use loadAuthView({ mode: "popup" }).`
+            message: `The hosted page could not be loaded inline \u2014 ${hint}.`
           });
         }, _AuthModal.EMBED_LOAD_TIMEOUT_MS);
       }
@@ -528,6 +717,10 @@ var _AuthModal = class _AuthModal {
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
       this.messageHandler = null;
+    }
+    if (this.unsubscribeSession) {
+      this.unsubscribeSession();
+      this.unsubscribeSession = null;
     }
     if (this.popupPoll) {
       clearInterval(this.popupPoll);
@@ -591,9 +784,19 @@ var AuthModal = _AuthModal;
 var import_core5 = __toESM(require_dist());
 
 // package.json
-var version = "0.40.0";
+var version = "0.58.2";
 
 // src/auth/auth.ts
+function isExpiredAuthError(err) {
+  return err === "invalid_token" || err === "expired_token" || err === "token_expired";
+}
+function closingMeansSignOut(url) {
+  try {
+    return new URL(url).searchParams.get("exit") === "signout";
+  } catch {
+    return false;
+  }
+}
 var _OneloAuth = class _OneloAuth {
   constructor(config) {
     this.pkceVerifier = null;
@@ -625,10 +828,31 @@ var _OneloAuth = class _OneloAuth {
     // race (a proactive refresh completing just after sign-out). Parity with
     // Swift's _signOutEpoch.
     this.signOutEpoch = 0;
+    /** True once this tab has handed a magic-link sign-in to another tab.
+     *
+     *  It is then DONE: it shows "continue in the other tab" and must present
+     *  nothing else. Without this the host app's own startup call to
+     *  loadAuthView() opened a sign-in form on top of that notice, so the tab the
+     *  user was told to leave asked them to log in again (reported 2026-08-19). */
+    this.handedOverToAnotherTab = false;
     this.allowCustomBranding = false;
     this.appName = "App";
     this.appLogoUrl = null;
     this.paywallEnabled = false;
+    /** False when Paywall → Access Gate is "Sign in only": this app never sells
+     *  in-app. Read it before offering ANY upgrade CTA — see isStoreAvailable(). */
+    this.inAppStoreAllowed = true;
+    /**
+     * Which hosted surface `loadAuthView()` last opened: `sign_in`, `store`,
+     * `no_plan`, or null when nothing was presented (the caller was already
+     * authorized, or the flow never got that far).
+     *
+     * `/api/sdk/flow/init` decides this centrally and the SDK used to drop it, so
+     * a host app that got `null` back could not tell "cancelled the sign-in" from
+     * "declined to buy" from "was shown 'no active plan'". The return type stays
+     * `OneloSession | null` — this is additive, and reading it is optional.
+     */
+    this.lastPresentedSurface = null;
     this.waitlistMode = false;
     this.sdkRedirectUrl = null;
     this.storeUrl = null;
@@ -641,6 +865,13 @@ var _OneloAuth = class _OneloAuth {
     this.initPromise = this.initialize();
   }
   async initialize() {
+    if (typeof window !== "undefined") {
+      try {
+        const q = new URL(window.location.href).searchParams;
+        if (q.get("onelo_code") || q.get("onelo_gate")) coverPage();
+      } catch {
+      }
+    }
     try {
       const verifier = (0, import_core2.generateCodeVerifier)();
       this.pkceVerifier = verifier;
@@ -661,6 +892,10 @@ var _OneloAuth = class _OneloAuth {
         appName: j["app_name"] ?? null,
         appLogoUrl: j["app_logo_url"] ?? null,
         paywallEnabled: j["paywall_enabled"] ?? false,
+        // Access Gate. The backend has always sent this; the parser dropped it,
+        // so nothing downstream could tell "Sign in only" from "Show the store".
+        // Defaults TRUE — an older backend that omits it behaves as before.
+        inAppStoreAllowed: j["in_app_store_allowed"] ?? true,
         waitlistMode: j["waitlist_mode"] ?? false,
         sdkRedirectUrl: j["sdk_redirect_url"] ?? null,
         storeUrl: j["store_url"] ?? null,
@@ -673,11 +908,17 @@ var _OneloAuth = class _OneloAuth {
       if (this.resolvedConfig.appName) this.appName = this.resolvedConfig.appName;
       this.appLogoUrl = this.resolvedConfig.appLogoUrl;
       this.paywallEnabled = this.resolvedConfig.paywallEnabled;
+      this.inAppStoreAllowed = this.resolvedConfig.inAppStoreAllowed ?? true;
       this.waitlistMode = this.resolvedConfig.waitlistMode;
       this.sdkRedirectUrl = this.resolvedConfig.sdkRedirectUrl;
       this.storeUrl = this.resolvedConfig.storeUrl;
       this.manageUrl = this.resolvedConfig.manageUrl;
       this.isReady = true;
+      try {
+        await this.exchangeCodeFromUrl();
+      } catch (err) {
+        console.warn("[Onelo] magic-link sign-in could not be completed:", err);
+      }
     } catch (e) {
       if (e instanceof import_core5.OneloError && e.code === "invalid_publishable_key") {
         this.isRevoked = true;
@@ -712,6 +953,7 @@ var _OneloAuth = class _OneloAuth {
   async loadAuthView(options) {
     await this.initPromise;
     if (this.isRevoked) throw import_core5.OneloError.invalidKey("Application key has been revoked");
+    if (this.handedOverToAnotherTab) return null;
     const mode = options?.mode ?? "embedded";
     if (this.waitlistMode && this.sdkRedirectUrl) {
       window.open(this.sdkRedirectUrl, "_blank");
@@ -719,23 +961,63 @@ var _OneloAuth = class _OneloAuth {
     }
     const existing = await this.getSession();
     const decision = await this.resolveFlow(existing?.accessToken ?? null);
+    this.lastPresentedSurface = decision.action === "present" ? decision.surface || null : null;
     if (decision.action === "authorized") {
       if (this.paywallEnabled) await this.revalidateEntitlement().catch(() => {
       });
       return await this.getSession() ?? existing;
     }
     const modal = new AuthModal();
-    const result = await modal.open(decision.url, mode);
-    if (result.type === "cancelled") return null;
-    if (result.type === "error") throw import_core5.OneloError.server(result.message);
+    const result = await modal.open(this.withReturnTo(decision.url), mode, { watchCrossTabSession: true });
+    if (result.type === "cancelled") {
+      if (closingMeansSignOut(decision.url)) {
+        await this.signOut();
+        return this.loadAuthView(options);
+      }
+      return null;
+    }
+    if (result.type === "error") {
+      if (isExpiredAuthError(result.message)) {
+        if (closingMeansSignOut(decision.url)) await this.signOut();
+        return this.loadAuthView(options);
+      }
+      throw import_core5.OneloError.server(result.message);
+    }
+    if (result.type === "session") {
+      const restored = await this.getSession();
+      if (restored) {
+        this.notifyListeners(restored);
+        return restored;
+      }
+      if (result.surfaceUrl) {
+        const surface = result.surfaceUrl;
+        const gate = await new AuthModal().open(surface, mode);
+        if (gate.type === "cancelled" && closingMeansSignOut(surface)) {
+          await this.signOut();
+          return this.loadAuthView(options);
+        }
+        if (gate.type === "error" && isExpiredAuthError(gate.message)) {
+          if (closingMeansSignOut(surface)) await this.signOut();
+          return this.loadAuthView(options);
+        }
+        if (gate.type === "code") return this.exchangeHostedCode(gate.code);
+        return null;
+      }
+      return this.loadAuthView(options);
+    }
+    return this.exchangeHostedCode(result.code);
+  }
+  /** Trade a one-time hosted code for a session. One implementation, because
+   *  the hosted flow can hand a code back from more than one surface. */
+  async exchangeHostedCode(code) {
     const { status, json } = await (0, import_core3.httpPost)(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,
-      { publishableKey: this.publishableKey, code: result.code, code_verifier: this.pkceVerifier },
+      { publishableKey: this.publishableKey, code, code_verifier: this.pkceVerifier },
       { "X-SDK-Version": version }
     );
     if (status !== 200) throw import_core5.OneloError.server("Hosted callback failed");
     const session = (0, import_core4.mapSession)(json);
-    await this.saveSession(session);
+    await this.saveSession(session, { announce: true });
     return session;
   }
   /**
@@ -858,6 +1140,61 @@ var _OneloAuth = class _OneloAuth {
     return session?.user.entitlement === "active";
   }
   /**
+   * True when this app has the paywall enabled (from `/api/sdk/config`).
+   *
+   * Parity with the Electron and React Native SDKs, which have had this since
+   * the launch gates were written. It was MISSING here — and the JS auth snippet
+   * shipped `onelo.auth.isPaywallEnabled()` anyway, so every developer who
+   * followed our own web documentation called a function that did not exist.
+   *
+   * Accurate only after `whenReady()` resolves; false before config loads.
+   */
+  isPaywallEnabled() {
+    return this.paywallEnabled;
+  }
+  /**
+   * May this app open a store at all?
+   *
+   * False when the developer chose Paywall → Access Gate → "Sign in only":
+   * buyers pay on their website, so nothing in the app may show plans, a
+   * checkout, or an "upgrade" CTA that leads to one.
+   *
+   * Check it before rendering any upsell. The backend refuses store-initiate in
+   * that state (409 `in_app_store_not_allowed`), so ignoring this only turns a
+   * hidden button into a dead one — but a dead button is still a broken screen.
+   *
+   * Accurate after `whenReady()`; true before config loads, so an early call
+   * cannot hide a store the developer does sell through.
+   */
+  isStoreAvailable() {
+    return this.inAppStoreAllowed;
+  }
+  /**
+   * **Should this user see your app?** The ONE signal to gate your UI on.
+   *
+   * `signed in && (no paywall || has paid access)`.
+   *
+   * Gating on a session alone is a paid-product giveaway: the session says WHO
+   * someone is and nothing about whether they may be here. That is not
+   * hypothetical — it is what happened when the gate had to be hand-assembled
+   * from three separate reads, which is what this method replaces. Mirrors
+   * Swift's `isAllowedIn` and the Flutter getter of the same name.
+   *
+   * Call it AFTER `whenReady()`: `isPaywallEnabled()` is false until config
+   * loads, so an early call can answer true for an unentitled user. The Swift
+   * property folds `isReady` in because it is observable; here readiness is
+   * awaited, not observed, so awaiting is the caller's half of the contract.
+   */
+  async isAllowedIn() {
+    await this.initPromise;
+    if (!this.resolvedConfig) return false;
+    const session = await this.getSession();
+    if (!session) return false;
+    if (typeof session.user.allowedIn === "boolean") return session.user.allowedIn;
+    if (!this.paywallEnabled) return true;
+    return session.user.entitlement === "active";
+  }
+  /**
    * Re-fetch the user's entitlement from the backend and, if it changed,
    * rebuild + persist the session so `hasActiveAccess()` and auth-state
    * listeners see the new value. Call after an external checkout or on app
@@ -879,9 +1216,15 @@ var _OneloAuth = class _OneloAuth {
         }
       );
       if (status !== 200) return session.user.entitlement;
-      const next = json["entitlement"] === "active" ? "active" : "none";
-      if (next !== session.user.entitlement && epoch === this.signOutEpoch) {
-        await this.saveSession({ ...session, user: { ...session.user, entitlement: next } });
+      const body = json;
+      const next = body["entitlement"] === "active" ? "active" : "none";
+      const nextAllowedIn = typeof body["allowed_in"] === "boolean" ? body["allowed_in"] : session.user.allowedIn;
+      const changed = next !== session.user.entitlement || nextAllowedIn !== session.user.allowedIn;
+      if (changed && epoch === this.signOutEpoch) {
+        await this.saveSession({
+          ...session,
+          user: { ...session.user, entitlement: next, allowedIn: nextAllowedIn }
+        });
       }
       return next;
     } catch {
@@ -1063,7 +1406,14 @@ var _OneloAuth = class _OneloAuth {
       this.refreshTimer = null;
     }
   }
-  async saveSession(session) {
+  /**
+   * @param announce Tell OTHER TABS a sign-in just happened. Only a genuine
+   *   sign-in announces. A token REFRESH must not: a tab sitting on the
+   *   sign-in screen would settle its modal, look for the session, find none
+   *   (the refresh happened in a different tab, not this one) and report a
+   *   cancelled sign-in — worse than the waiting it replaced.
+   */
+  async saveSession(session, { announce = false } = {}) {
     await Promise.all([
       this.storage.set(import_core.TOKEN_KEYS.ACCESS_TOKEN, session.accessToken),
       this.storage.set(import_core.TOKEN_KEYS.REFRESH_TOKEN, session.refreshToken),
@@ -1073,6 +1423,7 @@ var _OneloAuth = class _OneloAuth {
     this.startHeartbeat(session.accessToken);
     this.scheduleRefresh(session);
     this.notifyListeners(session);
+    if (announce) publishSessionCreated();
   }
   notifyListeners(session) {
     for (const cb of this.authStateListeners) cb(session);
@@ -1081,12 +1432,140 @@ var _OneloAuth = class _OneloAuth {
   async importSession(session) {
     await this.saveSession(session);
   }
+  /**
+   * Email a sign-in link. **Custom-UI path — paid plans only.**
+   *
+   * The plan gate matches `signIn()` / `signUp()` above. It was missing here, so
+   * on a free plan the call succeeded, the mail went out, and the developer had
+   * an API they could never finish: without `allowCustomBranding` they may not
+   * build their own sign-in screen at all, which is the only place this method
+   * makes sense. Either both are gated or neither; a half-working API is worse
+   * than a refused one.
+   *
+   * On a free plan use the hosted sign-in page (`loadAuthView()`), where magic
+   * link is available to everyone and the return trip is already wired.
+   */
   async sendMagicLink(email, redirectTo) {
     await this.initPromise;
+    if (!this.allowCustomBranding) throw import_core5.OneloError.planRequired();
     const body = { publishableKey: this.publishableKey, email };
     if (redirectTo) body.redirectTo = redirectTo;
-    const { status: mlStatus } = await (0, import_core3.httpPost)(`${this.apiUrl}/api/sdk/auth/magic-link`, body, { "X-SDK-Version": version });
+    const verifier = (0, import_core2.generateCodeVerifier)();
+    if (await this.persistMagicLinkVerifier(verifier)) {
+      body.code_challenge = await (0, import_core2.generateCodeChallenge)(verifier);
+    }
+    const { status: mlStatus, json: mlJson } = await (0, import_core3.httpPost)(`${this.apiUrl}/api/sdk/auth/magic-link`, body, { "X-SDK-Version": version });
     if (mlStatus >= 400) throw import_core5.OneloError.server(`Magic link request failed: HTTP ${mlStatus}`);
+    if (mlJson?.["success"] === false) {
+      const reason = mlJson["error"];
+      throw import_core5.OneloError.server(`Magic link refused${typeof reason === "string" ? `: ${reason}` : ""}`);
+    }
+  }
+  /** End this tab's part in the flow: show the farewell notice and refuse to
+   *  present anything afterwards — including the host app's own startup call to
+   *  loadAuthView(), which otherwise opened a login form on top of the notice. */
+  finishAsMessengerTab() {
+    this.handedOverToAnotherTab = true;
+    showHandedOverNotice(this.appName);
+  }
+  /**
+   * Tell the hosted page which page to send the browser back to.
+   *
+   * Only magic link needs this, and only on the web: every other hosted step
+   * finishes inside the iframe and answers by postMessage, but a magic link is
+   * opened LATER from an email, in a tab that has no way back to this one. The
+   * hosted page passes this along when it requests the link, and the BACKEND
+   * validates it against the app's allowed origins — so this value is a
+   * suggestion, never a trusted input. A page that lies about its own URL only
+   * gets a 400.
+   */
+  withReturnTo(url) {
+    if (typeof window === "undefined") return url;
+    try {
+      const u = new URL(url);
+      const here = new URL(window.location.href);
+      here.searchParams.delete("onelo_code");
+      u.searchParams.set("return_to", here.toString());
+      return u.toString();
+    } catch {
+      return url;
+    }
+  }
+  /**
+   * Write the magic-link verifier somewhere the NEXT tab can read it.
+   *
+   * Returns false when the value did not actually reach durable storage, which
+   * is the only signal `sendMagicLink` needs: no durable verifier → no
+   * challenge. `TokenStorage.set` degrades to an in-memory map rather than
+   * throwing (Safari private mode, disabled storage), and that map is invisible
+   * to the tab the email opens — so a successful `set` is NOT proof of
+   * persistence. Reading it back through a fresh instance is.
+   */
+  async persistMagicLinkVerifier(verifier) {
+    try {
+      await this.storage.set(import_core.TOKEN_KEYS.MAGIC_LINK_VERIFIER, verifier);
+      return typeof localStorage !== "undefined" && localStorage.getItem(import_core.TOKEN_KEYS.MAGIC_LINK_VERIFIER) === verifier;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Finish a magic-link sign-in after the browser has returned to your page.
+   *
+   * The email opens a new tab on Onelo, which consumes the link and sends the
+   * browser to the `redirectTo` you passed to `sendMagicLink`, with a one-time
+   * code appended as `onelo_code`. This exchanges that code for a session.
+   *
+   * Called automatically during `init()`, so most apps never call it directly;
+   * it is public for apps that route their own way and want to control when the
+   * exchange happens.
+   *
+   * Resolves to the session, or null when the URL carries no code — the normal
+   * case on every ordinary page load, and deliberately not an error.
+   */
+  async completeFromUrl() {
+    await this.initPromise;
+    return this.exchangeCodeFromUrl();
+  }
+  /** The body of `completeFromUrl` WITHOUT the `initPromise` await, so
+   *  `initialize()` can run it without waiting on itself. */
+  async exchangeCodeFromUrl() {
+    if (typeof window === "undefined") return null;
+    const url = new URL(window.location.href);
+    const gateSurface = url.searchParams.get("onelo_gate");
+    if (gateSurface) {
+      url.searchParams.delete("onelo_gate");
+      try {
+        window.history.replaceState({}, "", url.toString());
+      } catch {
+      }
+      publishSessionCreated(gateSurface);
+      this.finishAsMessengerTab();
+      return null;
+    }
+    const code = url.searchParams.get("onelo_code");
+    if (!code) return null;
+    coverPage();
+    url.searchParams.delete("onelo_code");
+    try {
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+    }
+    const codeVerifier = await this.storage.get(import_core.TOKEN_KEYS.MAGIC_LINK_VERIFIER);
+    const { status, json } = await (0, import_core3.httpPost)(
+      `${this.apiUrl}/api/sdk/auth/hosted-callback`,
+      { publishableKey: this.publishableKey, code, code_verifier: codeVerifier },
+      { "X-SDK-Version": version }
+    );
+    await this.storage.delete(import_core.TOKEN_KEYS.MAGIC_LINK_VERIFIER);
+    if (status !== 200) {
+      removeCover();
+      throw import_core5.OneloError.server(`Magic link sign-in failed: HTTP ${status}`);
+    }
+    const session = (0, import_core4.mapSession)(json);
+    await this.saveSession(session, { announce: true });
+    this.finishAsMessengerTab();
+    return session;
   }
   async sendPasswordReset(email, redirectTo) {
     await this.initPromise;
@@ -2106,7 +2585,10 @@ var OneloPaywall = class {
     let url = `${this.apiUrl}/api/sdk/paywall/store-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`;
     if (lang) url += `&lang=${encodeURIComponent(lang)}`;
     const { status, json } = await (0, import_core7.httpGet)(url, { "X-SDK-Version": version });
-    if (status !== 200) throw import_core7.OneloError.server("Failed to initiate store flow");
+    if (status !== 200) {
+      const code = (0, import_core7.extractErrorCode)(json);
+      throw import_core7.OneloError.server(`Failed to initiate store flow: HTTP ${status}${code ? ` (${code})` : ""}`);
+    }
     const j = json;
     const storeUrl = j["store_url"];
     if (!storeUrl) throw import_core7.OneloError.server("Invalid store-initiate response");
@@ -2130,6 +2612,7 @@ var OneloPaywall = class {
     const result = await modal.open(url, mode);
     if (result.type === "cancelled") return null;
     if (result.type === "error") throw import_core7.OneloError.server(result.message);
+    if (result.type !== "code") return null;
     const { status: cbStatus, json: cbJson } = await (0, import_core7.httpPost)(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,
       { publishableKey: this.publishableKey, code: result.code },
@@ -3032,9 +3515,11 @@ var Onelo = class {
    * SSE and fires `features.subscribe()`. Requires a signed-in Onelo Auth user.
    */
   async openUpgrade(_plan) {
+    await this.auth.whenReady();
     if (await this.auth.hasActiveAccess()) {
       await this.customerPortal.open({ intent: "change_plan" });
     } else {
+      if (!this.auth.isStoreAvailable()) return;
       await this.paywall.openStore();
     }
   }

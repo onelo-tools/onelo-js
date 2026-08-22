@@ -1,6 +1,7 @@
 {
   "name": "@onelo/js",
-  "version": "0.40.0",
+  "version": "0.58.2",
+  "license": "MIT",
   "description": "Onelo Web SDK",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",

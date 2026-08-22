@@ -143,11 +143,21 @@ export class Onelo {
    * SSE and fires `features.subscribe()`. Requires a signed-in Onelo Auth user.
    */
   async openUpgrade(_plan?: string): Promise<void> {
+    // "Sign in only" means this app sells nothing in-app — no store, and no
+    // upgrade path that ends in one. This method is what the official snippet
+    // wires to `feature.upgradeCta`, so without this check every developer who
+    // follows our own documentation opens the store the dashboard switched off.
+    // The backend refuses it (409) either way; failing here keeps the user from
+    // watching a window open onto an error.
+    await this.auth.whenReady()
     if (await this.auth.hasActiveAccess()) {
       // Subscriber → straight into the plan picker (portal auto-runs "Change
       // plan"), not the management home — the plans are the point of an upsell tap.
+      // Still allowed under "Sign in only": managing an EXISTING subscription is
+      // not selling, and the portal hides its own buy / change-plan actions.
       await this.customerPortal.open({ intent: 'change_plan' })
     } else {
+      if (!this.auth.isStoreAvailable()) return
       await this.paywall.openStore()
     }
   }

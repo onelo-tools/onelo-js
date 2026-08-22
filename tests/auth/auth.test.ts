@@ -93,9 +93,24 @@ describe('OneloAuth', () => {
     expect(session).toBeNull()
   })
 
-  it('sendMagicLink calls /api/sdk/auth/magic-link with email', async () => {
+  it('sendMagicLink is REFUSED on a free plan, like signIn/signUp', async () => {
+    // The gate was missing here until 2026-08-18: the call succeeded, the mail
+    // went out, and the developer had an API they could never finish — without
+    // allowCustomBranding they may not build their own sign-in screen at all,
+    // which is the only place this method is used. Free plans use the hosted
+    // page, where magic link works for everyone.
     mockFetch.mockImplementation((url: string) => {
       if (url.includes('/api/sdk/config')) return mockResponse(200, CONFIG_RESPONSE)
+      return mockResponse(404, {})
+    })
+    const gated = new OneloAuth({ publishableKey: 'onelo_pk_test', apiUrl: 'https://api.onelo.tools' })
+    await gated.whenReady()
+    await expect(gated.sendMagicLink('ada@example.com')).rejects.toThrow()
+  })
+
+  it('sendMagicLink calls /api/sdk/auth/magic-link with email', async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('/api/sdk/config')) return mockResponse(200, { ...CONFIG_RESPONSE, allow_custom_branding: true })
       if (url.includes('/api/sdk/auth/magic-link')) return mockResponse(200, { success: true })
       return mockResponse(404, {})
     })
@@ -106,6 +121,12 @@ describe('OneloAuth', () => {
       expect.stringContaining('/api/sdk/auth/magic-link'),
       expect.objectContaining({ method: 'POST' })
     )
+    // No code_challenge, deliberately: in the browser the verifier lives in a
+    // page that a magic link REPLACES, so a bound challenge could never be
+    // matched — /hosted-callback would 401 after the token was already used.
+    const mlCall = mockFetch.mock.calls.find((c: unknown[]) => String(c[0]).includes('/auth/magic-link'))
+    const body = JSON.parse(String((mlCall![1] as { body: string }).body))
+    expect(body.code_challenge).toBeUndefined()
   })
 
   it('sendPasswordReset calls /api/sdk/auth/reset-password with email', async () => {

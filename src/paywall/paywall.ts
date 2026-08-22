@@ -1,4 +1,4 @@
-import { httpGet, httpPost, mapSession, OneloSession, OneloError } from '@onelo/core'
+import { httpGet, httpPost, mapSession, OneloSession, OneloError, extractErrorCode } from '@onelo/core'
 import { AuthModal, type AuthPresentMode } from '../auth/auth-modal'
 import { version as SDK_VERSION } from '../../package.json'
 import { createModalCloseButton } from '../core/modal-close-button'
@@ -39,7 +39,12 @@ export class OneloPaywall {
     if (lang) url += `&lang=${encodeURIComponent(lang)}`
 
     const { status, json } = await httpGet(url, { 'X-SDK-Version': SDK_VERSION })
-    if (status !== 200) throw OneloError.server('Failed to initiate store flow')
+    if (status !== 200) {
+      const code = extractErrorCode(json)
+      // e.g. store_not_configured (409), paywall_not_enabled (403),
+      // in_app_store_not_allowed (409).
+      throw OneloError.server(`Failed to initiate store flow: HTTP ${status}${code ? ` (${code})` : ''}`)
+    }
     const j = json as Record<string, unknown>
     const storeUrl = j['store_url'] as string | undefined
     if (!storeUrl) throw OneloError.server('Invalid store-initiate response')
@@ -67,6 +72,11 @@ export class OneloPaywall {
 
     if (result.type === 'cancelled') return null
     if (result.type === 'error') throw OneloError.server(result.message)
+    // Exhaustive on purpose. The store modal does not opt into the cross-tab
+    // session watch, so this cannot fire — but the union is shared with auth,
+    // and a silent `result.code` on a variant without one is how a refactor
+    // turns into a runtime undefined.
+    if (result.type !== 'code') return null
 
     const { status: cbStatus, json: cbJson } = await httpPost(
       `${this.apiUrl}/api/sdk/auth/hosted-callback`,

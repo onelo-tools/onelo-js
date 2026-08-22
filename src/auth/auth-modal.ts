@@ -19,6 +19,7 @@
  *  - app NOT live + non-empty   → exact match required; localhost must be listed
  *  - app live                   → non-empty list required, exact match
  */
+import { subscribeSessionCreated } from '../core/session-channel'
 import { createModalCloseButton } from '../core/modal-close-button'
 import { installFailsafeClose } from '../core/failsafe-close'
 
@@ -100,6 +101,14 @@ export type AuthModalCallback =
   | { type: 'code'; code: string }
   | { type: 'cancelled' }
   | { type: 'error'; message: string }
+  /** Another TAB finished a magic-link sign-in while this modal was waiting.
+   *
+   *  No code to exchange: either the other tab wrote the session to shared
+   *  storage (read it back), or the Access Gate refused entry and named the
+   *  screen owed instead — `surfaceUrl`. That URL cannot be re-derived here,
+   *  because a refused user has no session and asking the backend again answers
+   *  "nobody is signed in". */
+  | { type: 'session'; surfaceUrl?: string }
 
 export class AuthModal {
   private overlay: HTMLDivElement | null = null
@@ -107,6 +116,7 @@ export class AuthModal {
   private popup: Window | null = null
   private popupPoll: ReturnType<typeof setInterval> | null = null
   private messageHandler: ((e: MessageEvent) => void) | null = null
+  private unsubscribeSession: (() => void) | null = null
   private loadWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Fail-safe ✕ controller for the embedded overlay (see failsafe-close.ts). */
   private failsafe: { markReady: () => void; rearm: () => void; dispose: () => void } | null = null
@@ -128,7 +138,18 @@ export class AuthModal {
     }
   }
 
-  open(hostedUrl: string, mode: AuthPresentMode = 'popup'): Promise<AuthModalCallback> {
+  /**
+   * @param watchCrossTabSession Settle with `{type:'session'}` if ANOTHER tab
+   *   signs this user in while the modal is open. Opt-in, and only the auth
+   *   flow asks for it: the STORE is also presented through this modal, and a
+   *   sign-in happening elsewhere is no reason to close a checkout the buyer is
+   *   part-way through.
+   */
+  open(
+    hostedUrl: string,
+    mode: AuthPresentMode = 'popup',
+    { watchCrossTabSession = false }: { watchCrossTabSession?: boolean } = {},
+  ): Promise<AuthModalCallback> {
     return new Promise((resolve) => {
       // Validate postMessage against the HOSTED PAGE origin (where the sign-in UI
       // actually runs + posts from), NOT apiUrl. The hosted page lives on the
@@ -175,6 +196,22 @@ export class AuthModal {
       }
       window.addEventListener('message', this.messageHandler)
 
+      // ── Magic link finishes in a DIFFERENT TAB ───────────────────────────
+      // The email cannot open in this tab, so the sign-in completes in a new
+      // one and posts nothing back here — this modal would sit on "Check your
+      // inbox" forever while the user is already signed in next door. That is
+      // what Adrian saw on 2026-08-18.
+      //
+      // The other tab announces the sign-in over a BroadcastChannel; there is
+      // nothing to exchange here, so settle and let the caller read the session
+      // back from storage. See core/session-channel.ts for why this is NOT the
+      // `storage` event — that was tried first and measured NOT to arrive.
+      if (watchCrossTabSession) {
+        this.unsubscribeSession = subscribeSessionCreated(
+          (surfaceUrl) => settle({ type: 'session', surfaceUrl }),
+        )
+      }
+
       if (mode === 'popup') {
         this.popup = window.open(
           hostedUrl,
@@ -200,10 +237,28 @@ export class AuthModal {
         // silent blank overlay — restoring the visible-error property the popup
         // mode has for its blocked case.
         this.loadWatchdog = setTimeout(() => {
+          // Name the PROTOCOL mismatch when that is what it is. The old message
+          // blamed allowed origins unconditionally, and a developer running a
+          // plain `http://localhost` dev server against the https hosted page
+          // spent hours checking a list that was already correct. Safari blocks
+          // cross-protocol frame access outright ("Protocols must match"), and
+          // no origin allowlist can change that — the dev server has to serve
+          // https, or the flow has to run in popup mode.
+          let hint =
+            'check this origin is in the app\'s allowed origins, or use loadAuthView({ mode: "popup" })'
+          try {
+            const pageProtocol = window.location.protocol
+            const hostedProtocol = new URL(hostedUrl).protocol
+            if (pageProtocol === 'http:' && hostedProtocol === 'https:') {
+              hint =
+                `this page is served over ${pageProtocol}// while the hosted page is ${hostedProtocol}// — ` +
+                'browsers block frame access across protocols. Serve your dev server over https, ' +
+                'or use loadAuthView({ mode: "popup" }). This is NOT an allowed-origins problem'
+            }
+          } catch { /* URL parse — fall back to the generic hint */ }
           settle({
             type: 'error',
-            message:
-              'The hosted page could not be loaded inline — check this origin is in the app\'s allowed origins, or use loadAuthView({ mode: "popup" }).',
+            message: `The hosted page could not be loaded inline — ${hint}.`,
           })
         }, AuthModal.EMBED_LOAD_TIMEOUT_MS)
       }
@@ -218,6 +273,10 @@ export class AuthModal {
     if (this.messageHandler) {
       window.removeEventListener('message', this.messageHandler)
       this.messageHandler = null
+    }
+    if (this.unsubscribeSession) {
+      this.unsubscribeSession()
+      this.unsubscribeSession = null
     }
     if (this.popupPoll) {
       clearInterval(this.popupPoll)

@@ -13,6 +13,19 @@ interface OneloUser {
     tenantId: string | null;
     /** Active-access flag from the backend; absent → 'none'. */
     entitlement: OneloEntitlement;
+    /**
+     * **May this person see the app?** Computed by Onelo, never here.
+     *
+     * The rule — no paywall, or a live grant — used to be re-derived in every SDK
+     * from two raw settings. Three languages, three copies, and the JS one
+     * answered TRUE while config was still loading, so a plan-less user walked
+     * into a paid app on every page load (2026-08-18). The server now ships the
+     * conclusion; reading it is the whole of an SDK's job here.
+     *
+     * Optional so an older backend that omits it still parses. When it is absent
+     * the SDK falls back to the old derivation — see `isAllowedIn`.
+     */
+    allowedIn?: boolean;
 }
 interface OneloSession {
     accessToken: string;
@@ -94,8 +107,8 @@ interface OneloConfig {
     autoLifecycleRefresh?: boolean;
 }
 declare class OneloError extends Error {
-    readonly code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout';
-    constructor(code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout', message: string);
+    readonly code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout' | 'in_app_store_not_allowed';
+    constructor(code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'plan_required' | 'no_active_plan' | 'timeout' | 'in_app_store_not_allowed', message: string);
     static notAuthenticated(): OneloError;
     static hostedFlowRequired(): OneloError;
     /**
@@ -251,10 +264,31 @@ declare class OneloAuth {
      *  heartbeat 401 or a refresh user_revoked. Parity with Swift isUserRevoked. */
     isUserRevoked: boolean;
     private signOutEpoch;
+    /** True once this tab has handed a magic-link sign-in to another tab.
+     *
+     *  It is then DONE: it shows "continue in the other tab" and must present
+     *  nothing else. Without this the host app's own startup call to
+     *  loadAuthView() opened a sign-in form on top of that notice, so the tab the
+     *  user was told to leave asked them to log in again (reported 2026-08-19). */
+    private handedOverToAnotherTab;
     allowCustomBranding: boolean;
     appName: string;
     appLogoUrl: string | null;
     paywallEnabled: boolean;
+    /** False when Paywall → Access Gate is "Sign in only": this app never sells
+     *  in-app. Read it before offering ANY upgrade CTA — see isStoreAvailable(). */
+    inAppStoreAllowed: boolean;
+    /**
+     * Which hosted surface `loadAuthView()` last opened: `sign_in`, `store`,
+     * `no_plan`, or null when nothing was presented (the caller was already
+     * authorized, or the flow never got that far).
+     *
+     * `/api/sdk/flow/init` decides this centrally and the SDK used to drop it, so
+     * a host app that got `null` back could not tell "cancelled the sign-in" from
+     * "declined to buy" from "was shown 'no active plan'". The return type stays
+     * `OneloSession | null` — this is additive, and reading it is optional.
+     */
+    lastPresentedSurface: string | null;
     waitlistMode: boolean;
     sdkRedirectUrl: string | null;
     storeUrl: string | null;
@@ -286,6 +320,9 @@ declare class OneloAuth {
     loadAuthView(options?: {
         mode?: AuthPresentMode;
     }): Promise<OneloSession | null>;
+    /** Trade a one-time hosted code for a session. One implementation, because
+     *  the hosted flow can hand a code back from more than one surface. */
+    private exchangeHostedCode;
     /**
      * Resolve the next flow step from the backend. Sends the current access token
      * (if any) as a Bearer so the backend sees whether we're signed in + entitled,
@@ -302,6 +339,49 @@ declare class OneloAuth {
      * `hasActiveAccess`. Returns false when there is no session.
      */
     hasActiveAccess(): Promise<boolean>;
+    /**
+     * True when this app has the paywall enabled (from `/api/sdk/config`).
+     *
+     * Parity with the Electron and React Native SDKs, which have had this since
+     * the launch gates were written. It was MISSING here — and the JS auth snippet
+     * shipped `onelo.auth.isPaywallEnabled()` anyway, so every developer who
+     * followed our own web documentation called a function that did not exist.
+     *
+     * Accurate only after `whenReady()` resolves; false before config loads.
+     */
+    isPaywallEnabled(): boolean;
+    /**
+     * May this app open a store at all?
+     *
+     * False when the developer chose Paywall → Access Gate → "Sign in only":
+     * buyers pay on their website, so nothing in the app may show plans, a
+     * checkout, or an "upgrade" CTA that leads to one.
+     *
+     * Check it before rendering any upsell. The backend refuses store-initiate in
+     * that state (409 `in_app_store_not_allowed`), so ignoring this only turns a
+     * hidden button into a dead one — but a dead button is still a broken screen.
+     *
+     * Accurate after `whenReady()`; true before config loads, so an early call
+     * cannot hide a store the developer does sell through.
+     */
+    isStoreAvailable(): boolean;
+    /**
+     * **Should this user see your app?** The ONE signal to gate your UI on.
+     *
+     * `signed in && (no paywall || has paid access)`.
+     *
+     * Gating on a session alone is a paid-product giveaway: the session says WHO
+     * someone is and nothing about whether they may be here. That is not
+     * hypothetical — it is what happened when the gate had to be hand-assembled
+     * from three separate reads, which is what this method replaces. Mirrors
+     * Swift's `isAllowedIn` and the Flutter getter of the same name.
+     *
+     * Call it AFTER `whenReady()`: `isPaywallEnabled()` is false until config
+     * loads, so an early call can answer true for an unentitled user. The Swift
+     * property folds `isReady` in because it is observable; here readiness is
+     * awaited, not observed, so awaiting is the caller's half of the contract.
+     */
+    isAllowedIn(): Promise<boolean>;
     /**
      * Re-fetch the user's entitlement from the backend and, if it changed,
      * rebuild + persist the session so `hasActiveAccess()` and auth-state
@@ -349,11 +429,76 @@ declare class OneloAuth {
      */
     private scheduleRefresh;
     private clearRefreshTimer;
+    /**
+     * @param announce Tell OTHER TABS a sign-in just happened. Only a genuine
+     *   sign-in announces. A token REFRESH must not: a tab sitting on the
+     *   sign-in screen would settle its modal, look for the session, find none
+     *   (the refresh happened in a different tab, not this one) and report a
+     *   cancelled sign-in — worse than the waiting it replaced.
+     */
     private saveSession;
     private notifyListeners;
     /** Import a session obtained outside of OneloAuth (e.g. from paywall flow). Saves tokens and notifies listeners. */
     importSession(session: OneloSession): Promise<void>;
+    /**
+     * Email a sign-in link. **Custom-UI path — paid plans only.**
+     *
+     * The plan gate matches `signIn()` / `signUp()` above. It was missing here, so
+     * on a free plan the call succeeded, the mail went out, and the developer had
+     * an API they could never finish: without `allowCustomBranding` they may not
+     * build their own sign-in screen at all, which is the only place this method
+     * makes sense. Either both are gated or neither; a half-working API is worse
+     * than a refused one.
+     *
+     * On a free plan use the hosted sign-in page (`loadAuthView()`), where magic
+     * link is available to everyone and the return trip is already wired.
+     */
     sendMagicLink(email: string, redirectTo?: string): Promise<void>;
+    /** End this tab's part in the flow: show the farewell notice and refuse to
+     *  present anything afterwards — including the host app's own startup call to
+     *  loadAuthView(), which otherwise opened a login form on top of the notice. */
+    private finishAsMessengerTab;
+    /**
+     * Tell the hosted page which page to send the browser back to.
+     *
+     * Only magic link needs this, and only on the web: every other hosted step
+     * finishes inside the iframe and answers by postMessage, but a magic link is
+     * opened LATER from an email, in a tab that has no way back to this one. The
+     * hosted page passes this along when it requests the link, and the BACKEND
+     * validates it against the app's allowed origins — so this value is a
+     * suggestion, never a trusted input. A page that lies about its own URL only
+     * gets a 400.
+     */
+    private withReturnTo;
+    /**
+     * Write the magic-link verifier somewhere the NEXT tab can read it.
+     *
+     * Returns false when the value did not actually reach durable storage, which
+     * is the only signal `sendMagicLink` needs: no durable verifier → no
+     * challenge. `TokenStorage.set` degrades to an in-memory map rather than
+     * throwing (Safari private mode, disabled storage), and that map is invisible
+     * to the tab the email opens — so a successful `set` is NOT proof of
+     * persistence. Reading it back through a fresh instance is.
+     */
+    private persistMagicLinkVerifier;
+    /**
+     * Finish a magic-link sign-in after the browser has returned to your page.
+     *
+     * The email opens a new tab on Onelo, which consumes the link and sends the
+     * browser to the `redirectTo` you passed to `sendMagicLink`, with a one-time
+     * code appended as `onelo_code`. This exchanges that code for a session.
+     *
+     * Called automatically during `init()`, so most apps never call it directly;
+     * it is public for apps that route their own way and want to control when the
+     * exchange happens.
+     *
+     * Resolves to the session, or null when the URL carries no code — the normal
+     * case on every ordinary page load, and deliberately not an error.
+     */
+    completeFromUrl(): Promise<OneloSession | null>;
+    /** The body of `completeFromUrl` WITHOUT the `initPromise` await, so
+     *  `initialize()` can run it without waiting on itself. */
+    private exchangeCodeFromUrl;
     sendPasswordReset(email: string, redirectTo?: string): Promise<void>;
 }
 
