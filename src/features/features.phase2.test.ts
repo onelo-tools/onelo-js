@@ -34,14 +34,15 @@ describe('OneloFeatures Phase 2 — moduleToken / ready / refresh (Swift parity)
     expect(mtCall(fetchMock), 'no request without a user').toBeFalsy()
   })
 
-  it('200 returns the token and sends publishableKey/userId/slug/userIdHash', async () => {
+  it('200 returns the token and sends publishableKey/userId/slug, never userIdHash', async () => {
     const fetchMock = stubFetch()
     const f = new OneloFeatures(API, PK)
     await f.load('u1', 'hash-abc')
     const token = await f.moduleToken('advanced-export')
     expect(token).toBe('jwt-xyz')
     const body = JSON.parse((mtCall(fetchMock)![1] as RequestInit).body as string)
-    expect(body).toMatchObject({ publishableKey: PK, userId: 'u1', slug: 'advanced-export', userIdHash: 'hash-abc' })
+    expect(body).toMatchObject({ publishableKey: PK, userId: 'u1', slug: 'advanced-export' })
+    expect('userIdHash' in body, 'Secure Mode is retired: the hash is never sent').toBe(false)
   })
 
   it('omits userIdHash when none is set', async () => {

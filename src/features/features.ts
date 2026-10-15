@@ -1,5 +1,6 @@
 import { httpPost } from '@onelo/core'
-import { OneloEventStream } from '../core/event-stream'
+import { OneloEventStream, type StreamConnectionIdentity } from '../core/event-stream'
+import { bearerHeader, sendWithUserToken, type UserTokenSource } from '../core/user-token'
 
 export type FeatureStatus =
   | 'enabled'
@@ -141,10 +142,12 @@ export class FeatureState {
 /** Error thrown by {@link OneloFeatures.moduleToken}. `code` mirrors the Swift
  *  `OneloFeaturesError` cases so cross-platform handling/docs line up 1:1. */
 export type OneloFeaturesErrorCode =
-  | 'not_authenticated'   // moduleToken() called before identify()/sign-in
+  | 'not_authenticated'   // no signed-in user, or their access token was refused even after a refresh
   | 'not_entitled'        // 403 — current user lacks access to the slug
-  | 'secure_mode_required'// 401 — app requires userIdHash, none supplied
-  | 'invalid_user_hash'   // 401 — supplied userIdHash failed HMAC on the backend
+  /** @deprecated Secure Mode is retired; the server no longer answers with it. */
+  | 'secure_mode_required'
+  /** @deprecated Secure Mode is retired; the server no longer answers with it. */
+  | 'invalid_user_hash'
   | 'network_error'       // transport failure or malformed response
 
 export class OneloFeaturesError extends Error {
@@ -209,6 +212,10 @@ export interface OneloFeaturesOptions {
    *  'hidden' by default; set 'enabled' in dev to preview gates before toggling
    *  them in the dashboard. Parity with Swift/RN/Electron `featureDefaultStatus`. */
   featureDefaultStatus?: FeatureStatus
+  /** The signed-in Onelo user's access token, sent as `Authorization: Bearer`
+   *  on every Features call so the server knows who the user really is. Wired by
+   *  `Onelo` to `auth`; without it the calls carry no token. */
+  userToken?: UserTokenSource
 }
 
 // v2 persists the FULL entry (reason/plan/cta) so a cold-start `up_to_date`
@@ -228,9 +235,12 @@ export class OneloFeatures {
   private configVersion = 0
   private pingDebounce: ReturnType<typeof setTimeout> | null = null
   private currentUserId: string | null = null
-  // Secure-mode targeting hash (HMAC computed on the DEV's server, forwarded
-  // here — the SDK never has the secret). Threaded into resolve/batch-ping/SSE.
-  private currentUserIdHash: string | null = null
+  // Signed-in user's access token source (Bearer on every Features call).
+  private readonly userToken: UserTokenSource | null
+  private userTokenRefusedWarned = false
+  // Bumped by every load(): a load that resumes after a newer one started must
+  // not point the shared stream back at its (stale) identity.
+  private loadGeneration = 0
   private readonly instanceId = resolveInstanceId()
   private monitor: { _trackFeatureCall: (name: string) => void; recordFlag?: (key: string, value: string) => void } | null = null
   private suppressIdentifyWarning: boolean
@@ -245,12 +255,20 @@ export class OneloFeatures {
   // and attached post-construction via attachStream(). Null in environments or
   // tests that never wire one — load() then falls back to a one-shot resolve.
   private stream: OneloEventStream | null = null
-  // ready() cold-start sync — resolved on the first applied snapshot or timeout
-  // (parity with Swift firstEventReceived + readyWaiters).
+  // Identity-bound readiness. A persisted snapshot is useful for fast first
+  // paint, but only a response confirmed for this load generation may release
+  // ready().
   private firstEventReceived = false
+  private confirmedGeneration = -1
+  private confirmedUserId: string | null = null
+  private confirmedVersion = 0
+  private snapshotConfirmed = false
   private readonly readyWaiters = new Set<() => void>()
   // refresh() debounce cursor (parity with Swift lastRefreshAt).
   private lastRefreshAt = 0
+  private identityLoaded = false
+  private streamConnection: StreamConnectionIdentity | null = null
+  private streamConnectionGeneration = -1
 
   constructor(
     apiUrl: string,
@@ -264,6 +282,7 @@ export class OneloFeatures {
     this.suppressIdentifyWarning = options?.suppressIdentifyWarning ?? false
     this.featureEnvironment = options?.featureEnvironment
     this.defaultStatus = options?.featureDefaultStatus ?? 'hidden'
+    this.userToken = options?.userToken ?? null
   }
 
   /** Subscribe to feature-state changes — fired on every snapshot mutation (an
@@ -290,25 +309,43 @@ export class OneloFeatures {
   attachStream(stream: OneloEventStream): void {
     this.stream = stream
     stream.addParamProvider(() => {
-      const p: Record<string, string> = { since_version: String(this.configVersion), instance_id: this.instanceId }
+      const p: Record<string, string> = {
+        since_version: String(this.snapshotConfirmed ? this.confirmedVersion : 0),
+        instance_id: this.instanceId,
+      }
       if (this.featureEnvironment) p['environment'] = this.featureEnvironment
-      if (this.currentUserIdHash) p['userIdHash'] = this.currentUserIdHash
       return p
+    })
+    stream.onConnectionIdentity((identity) => {
+      this.streamConnection = identity
+      this.streamConnectionGeneration = identity === null ? -1 : this.loadGeneration
     })
     // `connected` (client behind) and `features_updated` (admin Deploy) both
     // carry a fresh snapshot; `up_to_date` just confirms the version.
+    const currentStreamIsBound = (): boolean => {
+      const connection = this.streamConnection
+      return connection !== null &&
+        this.streamConnectionGeneration === this.loadGeneration &&
+        connection.userId === this.currentUserId &&
+        !connection.anonymousFallback
+    }
     const applyIfSnapshot = (data: Record<string, unknown>) => {
+      if (!currentStreamIsBound()) return
       const features = data['features'] as Record<string, FeatureWire> | undefined
       if (features) {
         const v = typeof data['config_version'] === 'number' ? (data['config_version'] as number) : this.configVersion
-        this._applySnapshot(v, features)
+        this._applySnapshot(v, features, this.loadGeneration, this.currentUserId)
+        this._signalFirstEvent(this.loadGeneration, this.currentUserId)
       }
     }
-    stream.on('connected', (data) => { applyIfSnapshot(data); this._signalFirstEvent() })
+    stream.on('connected', applyIfSnapshot)
     stream.on('features_updated', applyIfSnapshot)
     stream.on('up_to_date', (data) => {
+      if (!currentStreamIsBound()) return
       if (typeof data['config_version'] === 'number') this.configVersion = data['config_version'] as number
-      this._signalFirstEvent()
+      if (typeof data['config_version'] !== 'number') return
+      this.confirmedVersion = data['config_version'] as number
+      this._signalFirstEvent(this.loadGeneration, this.currentUserId)
     })
     // Foreground / network-resume → reconcile the snapshot via REST (debounced),
     // parity with Swift `_resyncOnLifecycle`. The stream itself already reconnects
@@ -350,15 +387,28 @@ export class OneloFeatures {
 
   /** Load features for a user (or anonymous). Called by Onelo orchestrator.
    * Restores cache for instant UI, then opens an SSE channel that delivers
-   * live updates whenever an admin clicks Deploy in the dashboard. */
-  async load(userId: string | null, userIdHash?: string | null): Promise<void> {
+   * live updates whenever an admin clicks Deploy in the dashboard.
+   *
+   * @param _userIdHash Deprecated and ignored: Secure Mode is retired, and the
+   *   signed-in Onelo user is proven with their access token automatically. */
+  async load(userId: string | null, _userIdHash?: string | null): Promise<void> {
+    const generation = ++this.loadGeneration
+    this.identityLoaded = true
     this.currentUserId = userId
-    this.currentUserIdHash = userIdHash ?? null
+    this.streamConnection = null
+    this.streamConnectionGeneration = -1
+    this.firstEventReceived = false
+    this.snapshotConfirmed = false
+    this.confirmedGeneration = -1
+    this.confirmedUserId = null
+    this.confirmedVersion = 0
     this._loadCache(userId)
     // Cache swapped for this identity (restored from disk or empty) → notify
     // subscribers so the UI re-renders with the new identity's state.
     this._emitChange()
     await this._batchPing()
+    // A newer load (sign-in / sign-out while this one awaited) owns the stream.
+    if (generation !== this.loadGeneration) return
     if (this.stream && typeof EventSource !== 'undefined') {
       // Live channel: (re)point the shared stream at this user. The stream
       // multiplexes features + auth over ONE connection.
@@ -366,7 +416,7 @@ export class OneloFeatures {
     } else {
       // No stream wired, or an environment without EventSource (some SSR
       // contexts): one-shot resolve — correct initial state, no live updates.
-      await this._resolve(userId)
+      await this._resolve(userId, generation)
     }
   }
 
@@ -399,6 +449,11 @@ export class OneloFeatures {
   invalidateCache(): void {
     this.cache.clear()
     this.configVersion = 0
+    this.confirmedVersion = 0
+    this.snapshotConfirmed = false
+    this.firstEventReceived = false
+    this.confirmedGeneration = -1
+    this.confirmedUserId = null
     this._writeCache()
     this._emitChange()
     this.stream?.reconnect()
@@ -410,7 +465,12 @@ export class OneloFeatures {
    * a resolve→SSE flicker. Parity with Swift `ready(timeout:)`. Multiple callers
    * resolve together on the first event (or each on its own timeout). */
   ready(timeoutMs = 1500): Promise<void> {
-    if (this.firstEventReceived) return Promise.resolve()
+    if (
+      this.firstEventReceived &&
+      this.snapshotConfirmed &&
+      this.confirmedGeneration === this.loadGeneration &&
+      this.confirmedUserId === this.currentUserId
+    ) return Promise.resolve()
     return new Promise<void>((resolve) => {
       let settled = false
       const finish = (): void => {
@@ -430,10 +490,17 @@ export class OneloFeatures {
    * cached state intact and SSE catches up later. Parity with Swift
    * `refresh(force:)`. */
   async refresh(force = false): Promise<void> {
+    if (!this.identityLoaded) return
     const now = Date.now()
     if (!force && now - this.lastRefreshAt < REFRESH_DEBOUNCE_MS) return
     this.lastRefreshAt = now
-    await this._resolve(this.currentUserId)
+    await this._resolve(this.currentUserId, this.loadGeneration)
+  }
+
+  /** A comparable picture of the current snapshot — the plan-change refresher
+   *  (#659) re-checks until it differs. @internal */
+  snapshotKey(): string {
+    return JSON.stringify([...this.cache.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
   }
 
   /** Requests a short-lived (60s) per-feature JWT from
@@ -443,23 +510,28 @@ export class OneloFeatures {
    * Swift `moduleToken(for:)`.
    *
    * Throws {@link OneloFeaturesError}:
-   * - `not_authenticated` — no user identified yet (no network call is made)
+   * - `not_authenticated` — no user identified yet (no network call is made), or
+   *   the signed-in user's access token was refused even after a refresh
    * - `not_entitled` (403) — the user lacks access to `slug`
-   * - `secure_mode_required` (401) — app requires `userIdHash`, none supplied
-   * - `invalid_user_hash` (401) — supplied `userIdHash` failed backend HMAC
    * - `network_error` — transport failure or malformed response */
   async moduleToken(slug: string): Promise<string> {
-    if (!this.currentUserId) throw new OneloFeaturesError('not_authenticated')
-    const body: Record<string, unknown> = {
-      publishableKey: this.publishableKey,
-      userId: this.currentUserId,
-      slug,
-    }
-    if (this.currentUserIdHash) body['userIdHash'] = this.currentUserIdHash
+    const userId = this.currentUserId
+    if (!userId) throw new OneloFeaturesError('not_authenticated')
     let status: number
     let json: Record<string, unknown>
     try {
-      const res = await httpPost(`${this.apiUrl}/api/sdk/features/module-token`, body)
+      // A module token is always for a user, so a refused token ends here
+      // (`not_authenticated`) instead of retrying anonymously.
+      const res = await sendWithUserToken(
+        this.userToken,
+        ({ token }) => httpPost(
+          `${this.apiUrl}/api/sdk/features/module-token`,
+          { publishableKey: this.publishableKey, userId, slug },
+          bearerHeader(token),
+        ),
+        () => this._warnUserTokenRefused(),
+        false,
+      )
       status = res.status
       json = (res.json ?? {}) as Record<string, unknown>
     } catch {
@@ -487,9 +559,13 @@ export class OneloFeatures {
   /** Signals all pending ready() callers that the first snapshot arrived.
    * Idempotent — subsequent calls are no-ops. Parity with Swift
    * `_signalFirstEvent`. */
-  private _signalFirstEvent(): void {
-    if (this.firstEventReceived) return
+  private _signalFirstEvent(generation: number, userId: string | null): void {
+    if (generation !== this.loadGeneration || userId !== this.currentUserId || !this.identityLoaded) return
+    if (this.firstEventReceived && this.confirmedGeneration === generation) return
     this.firstEventReceived = true
+    this.snapshotConfirmed = true
+    this.confirmedGeneration = generation
+    this.confirmedUserId = userId
     const waiters = Array.from(this.readyWaiters)
     this.readyWaiters.clear()
     for (const w of waiters) w()
@@ -515,15 +591,15 @@ export class OneloFeatures {
     const isTestEnv = this.featureEnvironment === 'test' || this.publishableKey.includes('_test_')
     if (!isTestEnv && Math.random() > 0.01) return
     try {
-      await httpPost(
+      await sendWithUserToken(this.userToken, ({ token }) => httpPost(
         `${this.apiUrl}/api/sdk/features/batch-ping`,
         {
           publishableKey: this.publishableKey,
           features: names,
-          ...(this.currentUserIdHash ? { userIdHash: this.currentUserIdHash } : {}),
           ...(this.featureEnvironment ? { environment: this.featureEnvironment } : {}),
         },
         {
+          ...bearerHeader(token),
           // Trust-on-first-use device id — REQUIRED or the backend 403s
           // test-env discovery with `missing_instance_id`.
           'X-Onelo-Instance-Id': this.instanceId,
@@ -534,32 +610,57 @@ export class OneloFeatures {
           // (the SSE path already reports platform=js the same way).
           'X-Onelo-Sdk-Platform': 'js',
         },
-      )
+      ), () => this._warnUserTokenRefused(), true, false)
     } catch {
       // best-effort
     }
   }
 
-  private async _resolve(userId: string | null): Promise<void> {
+  private async _resolve(userId: string | null, generation = this.loadGeneration): Promise<void> {
+    if (!this.identityLoaded) return
     try {
-      const body: Record<string, unknown> = { publishableKey: this.publishableKey }
-      if (userId) body['userId'] = userId
-      if (this.currentUserIdHash) body['userIdHash'] = this.currentUserIdHash
-      if (this.featureEnvironment) body['environment'] = this.featureEnvironment
-      const { status, json } = await httpPost(`${this.apiUrl}/api/sdk/features/resolve`, body)
+      const { status, json } = await sendWithUserToken(this.userToken, ({ token, anonymous }) => {
+        const body: Record<string, unknown> = { publishableKey: this.publishableKey }
+        // `userId` rides along with the token: the server ignores it when the
+        // token is valid, and a server without #517 still resolves by it.
+        if (userId && !anonymous) body['userId'] = userId
+        if (this.featureEnvironment) body['environment'] = this.featureEnvironment
+        return httpPost(`${this.apiUrl}/api/sdk/features/resolve`, body, bearerHeader(token))
+      }, () => this._warnUserTokenRefused(), userId === null)
       if (status !== 200) return
+      if (generation !== this.loadGeneration || userId !== this.currentUserId) return
       const j = json as Record<string, unknown>
+      if (userId !== null && j['anonymous'] === true) return
       const features = j['features'] as Record<string, FeatureWire> | undefined
       if (features) {
-        this._applySnapshot(typeof j['config_version'] === 'number' ? (j['config_version'] as number) : this.configVersion, features)
+        this._applySnapshot(
+          typeof j['config_version'] === 'number' ? (j['config_version'] as number) : this.configVersion,
+          features,
+          generation,
+          userId,
+        )
       }
       this._maybeWarnAnonymous(j)
       // A successful resolve is a settled snapshot too — unblocks ready() on the
       // no-SSE / SSR fallback path where no `connected` event ever arrives.
-      this._signalFirstEvent()
+      this._signalFirstEvent(generation, userId)
     } catch {
       // keep existing cache
     }
+  }
+
+  /** The server refused the signed-in user's access token even after a refresh,
+   *  so the call went out anonymous. Features has no error callback; this
+   *  one-time warning is its error channel (like the anonymous-mode warning). */
+  private _warnUserTokenRefused(): void {
+    if (this.userTokenRefusedWarned) return
+    this.userTokenRefusedWarned = true
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[Onelo] The signed-in user\'s access token was refused by Features (invalid_user_token) ' +
+      'even after a refresh, so the request was made without a user. ' +
+      'Check that the publishableKey belongs to the app the user signed in to.',
+    )
   }
 
   /**
@@ -589,6 +690,9 @@ export class OneloFeatures {
   }
 
   private _loadCache(userId: string | null): void {
+    this.cache.clear()
+    this.configVersion = 0
+    this.confirmedVersion = 0
     if (typeof localStorage === 'undefined') return
     try {
       const raw = localStorage.getItem(this._cacheKey(userId))
@@ -596,7 +700,6 @@ export class OneloFeatures {
       const parsed = JSON.parse(raw) as CachedSnapshot
       if (typeof parsed.configVersion !== 'number' || !parsed.features) return
       this.configVersion = parsed.configVersion
-      this.cache.clear()
       for (const [name, cached] of Object.entries(parsed.features)) {
         // v1 back-compat: an old cache stored a bare status string.
         if (typeof cached === 'string') {
@@ -628,8 +731,20 @@ export class OneloFeatures {
     }
   }
 
-  private _applySnapshot(version: number, features: Record<string, FeatureWire>): void {
+  private _applySnapshot(
+    version: number,
+    features: Record<string, FeatureWire>,
+    generation = this.loadGeneration,
+    userId = this.currentUserId,
+  ): void {
+    // Existing internal callers always pass the generation and identity. The
+    // two-argument form remains a useful test seam for parsing a wire snapshot
+    // before an orchestrator has loaded an identity.
+    const directSnapshot = arguments.length < 3
+    if (!directSnapshot && (!this.identityLoaded || generation !== this.loadGeneration || userId !== this.currentUserId)) return
     this.configVersion = version
+    this.confirmedVersion = version
+    this.snapshotConfirmed = true
     this.cache.clear()
     for (const [name, wire] of Object.entries(features)) {
       this.cache.set(name, wireToEntry(wire))

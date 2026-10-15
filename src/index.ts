@@ -12,5 +12,10 @@ export type { OneloConsentRequirement, OneloConsentEnforcement } from './consent
 export { OneloForms } from './forms/forms'
 export { OneloWaitlist } from './waitlist/waitlist'
 export type { AuthPresentMode } from './auth/auth-modal'
+// #798: the function handed to `onelo.auth.useExternalToken()`.
+export type { ExternalTokenGetter } from './auth/external-token'
 export { OneloError } from '@onelo/core'
 export type { OneloConfig, OneloSession, OneloUser, OneloEntitlement } from '@onelo/core'
+// #681: the brand tokens every piece of SDK chrome is painted from.
+export type { BrandTokens } from '@onelo/core'
+export type { SignUpOptions, SignupMarketingConsent, WaitlistConsent, WaitlistJoinOptions } from '@onelo/core'

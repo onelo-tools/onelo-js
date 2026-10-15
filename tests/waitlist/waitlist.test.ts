@@ -13,8 +13,9 @@ describe('OneloWaitlist', () => {
 
   beforeEach(() => mockFetch.mockReset())
 
-  it('returns success and position on join', async () => {
-    mockFetch.mockResolvedValue(mockResponse(200, { success: true, position: 42, alreadyJoined: false }))
+  // Bodies mirror backend/app/routes/sdk_waitlist.py join_waitlist: `ok`, never `success`.
+  it('returns success and position on a new join', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, position: 42 }))
     const result = await waitlist.join('beta', 'ada@example.com')
     expect(result.success).toBe(true)
     expect(result.position).toBe(42)
@@ -22,7 +23,7 @@ describe('OneloWaitlist', () => {
   })
 
   it('sends publishableKey, email, and slug in body', async () => {
-    mockFetch.mockResolvedValue(mockResponse(200, { success: true, alreadyJoined: false }))
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, position: 1 }))
     await waitlist.join('beta', 'ada@example.com')
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toContain('/api/sdk/waitlist/join')
@@ -33,15 +34,48 @@ describe('OneloWaitlist', () => {
   })
 
   it('returns alreadyJoined: true when server signals duplicate', async () => {
-    mockFetch.mockResolvedValue(mockResponse(200, { success: true, position: 10, alreadyJoined: true }))
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, alreadyJoined: true, position: 10 }))
     const result = await waitlist.join('beta', 'ada@example.com')
+    expect(result.success).toBe(true)
     expect(result.alreadyJoined).toBe(true)
+    expect(result.position).toBe(10)
+  })
+
+  it('reports failure for a non-2xx response', async () => {
+    mockFetch.mockResolvedValue(mockResponse(403, { detail: 'Waitlist is closed' }))
+    const result = await waitlist.join('beta', 'ada@example.com')
+    expect(result.success).toBe(false)
+    expect(result.alreadyJoined).toBe(false)
+  })
+
+  it('reports failure when a 2xx body does not carry ok: true', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: false }))
+    const result = await waitlist.join('beta', 'ada@example.com')
+    expect(result.success).toBe(false)
   })
 
   it('omits slug when not provided', async () => {
-    mockFetch.mockResolvedValue(mockResponse(200, { success: true, alreadyJoined: false }))
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, position: 1 }))
     await waitlist.join(undefined, 'ada@example.com')
     const body = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(body.slug).toBeUndefined()
+  })
+})
+
+describe('OneloWaitlist — consent flags (#818)', () => {
+  const waitlist = new OneloWaitlist('https://api.onelo.tools', 'onelo_pk_test')
+  beforeEach(() => mockFetch.mockReset())
+
+  it('sends the checkboxes the form showed', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, position: 1 }))
+    await waitlist.join('beta', 'ada@example.com', { consent: { marketing: true, custom: false } })
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(body.consent).toEqual({ marketing: true, custom: false })
+  })
+
+  it('sends no consent field when none was given', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, { ok: true, position: 1 }))
+    await waitlist.join('beta', 'ada@example.com')
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).not.toHaveProperty('consent')
   })
 })

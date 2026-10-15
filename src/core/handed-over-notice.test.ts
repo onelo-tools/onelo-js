@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { showHandedOverNotice } from './handed-over-notice'
+import { coverPage, showHandedOverNotice } from './handed-over-notice'
 
 /**
  * What the EMAIL TAB shows once the tab the user started in has taken over.
@@ -46,11 +46,41 @@ describe('handed-over notice', () => {
     expect(text).not.toContain('null')
   })
 
+  // #535: only a tab that answered may be named.
+  it('does not point at a tab when no waiting tab answered', () => {
+    showHandedOverNotice('Turingo', false)
+    const text = document.getElementById('onelo-handed-over')!.textContent ?? ''
+    expect(text).not.toMatch(/tab you started from/i)
+    expect(text).toMatch(/open Turingo again/)
+  })
+
+  it('claims nothing while the answer is still out, then names the tab', () => {
+    showHandedOverNotice('Turingo', null)
+    const el = document.getElementById('onelo-handed-over')!
+    expect(el.textContent).not.toMatch(/tab you started from/i)
+    showHandedOverNotice('Turingo', true)
+    expect(el.textContent).toMatch(/Continue in the Turingo tab you started from/)
+  })
+
   it('never stacks two overlays', () => {
     // A re-render or a double init must not double the backdrop.
     showHandedOverNotice('Turingo')
     showHandedOverNotice('Turingo')
     expect(document.querySelectorAll('#onelo-handed-over').length).toBe(1)
+  })
+})
+
+describe('the pending cover (#728)', () => {
+  it('carries a spinner and the given heading while signing in, and drops the spinner once done', () => {
+    coverPage(undefined, 'Logujemy Cię…')
+    const el = document.getElementById('onelo-handed-over')!
+    expect(el.getAttribute('role')).toBe('status')
+    expect(el.querySelector('h1')!.textContent).toBe('Logujemy Cię…')
+    expect(el.querySelector('[data-onelo-spinner]')).toBeTruthy()
+    showHandedOverNotice('Turingo')
+    expect(el.querySelector('[data-onelo-spinner]')).toBeNull()
+    expect(el.querySelector('h1')!.textContent).toBe("You're signed in")
+    expect(el.textContent).toMatch(/Turingo/)
   })
 })
 

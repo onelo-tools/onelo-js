@@ -8,7 +8,9 @@ import { OneloWaitlist } from './waitlist/waitlist'
 import { OneloCustomerPortal } from './customer-portal/customer-portal'
 import { OneloConsent } from './consent/consent'
 import { OneloEventStream } from './core/event-stream'
-import { OneloConfig } from '@onelo/core'
+import { PlanChangeRefresher, type PlanChange } from './core/plan-change'
+import { resetUserTokenRefusal, type UserTokenSource } from './core/user-token'
+import { OneloConfig, BrandSource } from '@onelo/core'
 import { version as SDK_VERSION } from '../package.json'
 
 export class Onelo {
@@ -26,10 +28,21 @@ export class Onelo {
   // ONE multiplexed SSE connection per app, shared by features + auth. Owned
   // here (composition root); consumers only register handlers/params on it.
   private readonly eventStream: OneloEventStream
+  private readonly planChange: PlanChangeRefresher
 
   constructor(config: OneloConfig) {
-    this.eventStream = new OneloEventStream(config.apiUrl, config.publishableKey, SDK_VERSION)
-    this.auth = new OneloAuth(config)
+    // The signed-in user's access token, proving the user on every Features call
+    // and on the Event Stream mint (#518). getSession() refreshes a token near
+    // expiry, so a stale one is never sent. Read lazily: auth is created below.
+    const userToken: UserTokenSource = {
+      current: () => this.auth.getSession().then(s => s?.accessToken ?? null),
+      refresh: () => this.auth.refreshSession().then(s => s?.accessToken ?? null),
+    }
+    this.eventStream = new OneloEventStream(config.apiUrl, config.publishableKey, SDK_VERSION, userToken)
+    // ONE brand-token model (#681): config sets it, initiate responses refresh
+    // it, every modal paints its chrome from it.
+    const brand = new BrandSource()
+    this.auth = new OneloAuth(config, brand)
     // Register auth's session.revoked listener BEFORE any session loads so no
     // revoke is missed. The connection itself is opened by the features bridge.
     this.auth.attachEventStream(this.eventStream)
@@ -38,6 +51,8 @@ export class Onelo {
       config.publishableKey,
       () => this.auth.getSession().then(s => s?.accessToken ?? null),
       (session) => this.auth.importSession(session),
+      () => this.auth.getSession(),
+      () => this.auth.storeLinkChallenge(),
     )
     this.customerPortal = new OneloCustomerPortal(
       config.apiUrl,
@@ -45,6 +60,13 @@ export class Onelo {
       () => this.auth.getSession().then(s => s?.accessToken ?? null),
       () => { void this.auth.signOut() },
     )
+    // #642: a checkout opened from the store asks for a fresh portal token
+    // when its pre-auth chain ends; the signed-in user's portal answers it.
+    const renewPortal = (requestId: string) => this.customerPortal.renewReply(requestId)
+    this.paywall.setPortalRenewer(renewPortal)
+    this.paywall.setBrandSource(brand)
+    this.customerPortal.setBrandSource(brand)
+    this.auth.setPortalRenewer(renewPortal)
     this.forms = new OneloForms(config.apiUrl, config.publishableKey)
     this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl, {
@@ -71,12 +93,26 @@ export class Onelo {
       suppressIdentifyWarning: config.suppressIdentifyWarning ?? false,
       featureEnvironment,
       featureDefaultStatus: config.featureDefaultStatus,
+      userToken,
     })
     // Features drives the shared connection's userId (via load) + supplies its
     // since_version/environment params. This opens/points the ONE stream that
     // auth's session.revoked listener also rides.
     this.features.attachStream(this.eventStream)
-    this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures())
+    // #659: a purchase / plan switch handed back by any hosted container
+    // reconciles features + entitlement at once, instead of waiting for the
+    // stream. One refresher, so the three containers cannot drift.
+    this.planChange = new PlanChangeRefresher({
+      refreshFeatures: () => this.features.refresh(true),
+      revalidateEntitlement: () => this.auth.revalidateEntitlement(),
+      snapshot: () => this.features.snapshotKey(),
+    })
+    const onPlanChange = (change: PlanChange) => { void this.planChange.handBack(change) }
+    this.auth.setPlanChangeHandler(onPlanChange)
+    this.paywall.setPlanChangeHandler(onPlanChange)
+    this.customerPortal.setPlanChangeHandler(onPlanChange)
+    this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures(), userToken)
+    this.feedback.setBrandSource(brand)
 
     // Legal-consent gate. Auto-presents on sign-in + on `legal.consent_required`
     // (over the shared stream) unless `autoPresentConsentGate:false`, in which
@@ -90,13 +126,25 @@ export class Onelo {
     // Auth → features identity bridge: reload features when session changes.
     // Also re-check consent on sign-in (a blocking legal version may have taken
     // effect while the user was away) — no-ops when signed out or nothing blocks.
+    let boundUserId: string | null = null
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {
+      // A different user starts a new token-refusal episode. The same user
+      // (a refresh re-publishing the session) does not: that is what keeps a
+      // persistently refused token from looping refresh → load → refresh.
+      const userId = session?.user.id ?? null
+      if (userId !== boundUserId) resetUserTokenRefusal(userToken)
+      boundUserId = userId
       this.monitor.setUserId(session?.user.id ?? null)
       void this.features.load(session?.user.id ?? null)
       if (session?.user.id && autoPresentConsent) void this.consent.presentGateIfNeeded()
     })
 
-    void this.features.load(null)
+    // Let auth restore the persisted session before the first Features load.
+    // Starting an anonymous resolve here races the restore and can overwrite a
+    // returning user's snapshot with a partial anonymous answer.
+    void this.auth.getSession().then((session) => {
+      if (!session) void this.features.load(null)
+    }).catch(() => { void this.features.load(null) })
   }
 
   /**
@@ -116,9 +164,9 @@ export class Onelo {
   }
 
   /**
-   * Only needed when NOT using Onelo Auth (own auth system). Pass `userIdHash`
-   * (HMAC-SHA256 computed on YOUR server, `"user:"+userId`) to satisfy Secure
-   * Mode targeting — the SDK forwards it and never computes it.
+   * @deprecated The signed-in Onelo user is used automatically: Features calls
+   * prove them with their access token. `userIdHash` is ignored (Secure Mode is
+   * retired). Kept so existing code compiles.
    */
   async identify(userId: string, userIdHash?: string): Promise<void> {
     await this.features.load(userId, userIdHash)
@@ -126,21 +174,19 @@ export class Onelo {
 
   /**
    * Open the upgrade flow for a plan-blocked feature — call it when the user taps
-   * a gated tile whose `feature.upgradeCta` is set. Routes to the right WORKING
-   * web surface by billing state:
-   *   - active subscriber → `customerPortal.open()` (the Portal's "Change plan" —
-   *     upgrade / downgrade / interval switch, all handled + confirmed there).
-   *   - otherwise         → `paywall.openStore()` (pick + buy a plan).
-   *
-   * Unlike the native SDKs, `@onelo/js` does NOT drive `/upgrade-initiate`'s
-   * `store_switch` checkout: that flow completes via a deep-link / postMessage the
-   * in-iframe store-switch terminals don't emit, so it would hang the modal. The
-   * Portal is the web-correct door for an existing subscriber's plan change.
+   * a gated tile whose `feature.upgradeCta` is set. Routes by billing state:
+   *   - entitled user → straight to where the backend resolves the upgrade
+   *     (`/upgrade-initiate`, the same decision as every other SDK): the plan
+   *     picker for a subscriber, the store for a free-tier user's first
+   *     purchase, or the portal's explanation when plan changes are off. Opened
+   *     in the Customer Portal's modal; no portal page in front of it (#670).
+   *   - otherwise → `paywall.openStore()` (pick + buy a plan).
    *
    * `plan` is accepted for cross-platform call-site parity (Swift/Electron/RN pass
-   * `feature.requiredPlan`); on web the Portal/Store show the plans, so it is
-   * advisory only. Fire-and-forget: the resulting plan change reaches the SDK via
-   * SSE and fires `features.subscribe()`. Requires a signed-in Onelo Auth user.
+   * `feature.requiredPlan`); on web the buyer picks in the store, so it is
+   * advisory only. The resulting plan change is reconciled the moment the page
+   * hands back (#659) and fires `features.subscribe()`. Requires a signed-in
+   * Onelo Auth user.
    */
   async openUpgrade(_plan?: string): Promise<void> {
     // "Sign in only" means this app sells nothing in-app — no store, and no
@@ -151,11 +197,13 @@ export class Onelo {
     // watching a window open onto an error.
     await this.auth.whenReady()
     if (await this.auth.hasActiveAccess()) {
-      // Subscriber → straight into the plan picker (portal auto-runs "Change
-      // plan"), not the management home — the plans are the point of an upsell tap.
-      // Still allowed under "Sign in only": managing an EXISTING subscription is
-      // not selling, and the portal hides its own buy / change-plan actions.
-      await this.customerPortal.open({ intent: 'change_plan' })
+      if (!this.auth.isStoreAvailable()) {
+        // Still allowed under "Sign in only": managing an EXISTING subscription
+        // is not selling. The portal hides its own buy / change-plan actions.
+        await this.customerPortal.open({ intent: 'change_plan' })
+        return
+      }
+      await this.customerPortal.openUpgrade()
     } else {
       if (!this.auth.isStoreAvailable()) return
       await this.paywall.openStore()
@@ -165,6 +213,7 @@ export class Onelo {
   /** Release background timers. Call when the SDK instance is no longer needed. */
   destroy(): void {
     this.authUnsubscribe?.()
+    this.planChange.cancel()
     this.eventStream.destroy()
     this.features.stopPolling()
     this.monitor.destroy()

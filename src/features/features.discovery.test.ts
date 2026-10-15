@@ -4,7 +4,7 @@ import { OneloFeatures } from './features'
 const API = 'https://api.onelo.tools'
 const PK = 'onelo_pk_test_abc'
 
-describe('OneloFeatures — discovery instance-id + sampling + userIdHash (Phase 5)', () => {
+describe('OneloFeatures — discovery instance-id + sampling; userIdHash never sent (#518)', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
   function stubFetch() {
@@ -15,7 +15,7 @@ describe('OneloFeatures — discovery instance-id + sampling + userIdHash (Phase
   const pingCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls.find((c) => String(c[0]).includes('/batch-ping'))
   const resolveCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls.find((c) => String(c[0]).includes('/features/resolve'))
 
-  it('batch-ping sends X-Onelo-Instance-Id header + userIdHash body; test-env always pings', async () => {
+  it('batch-ping sends X-Onelo-Instance-Id header and no userIdHash; test-env always pings', async () => {
     const fetchMock = stubFetch()
     const f = new OneloFeatures(API, PK, undefined, { featureEnvironment: 'test' })
     f.declare(['hero'])
@@ -26,13 +26,13 @@ describe('OneloFeatures — discovery instance-id + sampling + userIdHash (Phase
     const headers = (ping![1] as RequestInit).headers as Record<string, string>
     expect(headers['X-Onelo-Instance-Id']).toBeTruthy()
     const body = JSON.parse((ping![1] as RequestInit).body as string)
-    expect(body.userIdHash).toBe('hash-abc')
+    expect('userIdHash' in body, 'Secure Mode is retired: the hash is never sent').toBe(false)
     expect(body.environment).toBe('test')
 
-    // resolve also carries the hash + userId
+    // resolve carries the userId but not the hash
     const rb = JSON.parse((resolveCall(fetchMock)![1] as RequestInit).body as string)
     expect(rb.userId).toBe('u1')
-    expect(rb.userIdHash).toBe('hash-abc')
+    expect('userIdHash' in rb).toBe(false)
   })
 
   it('instance id is stable across instances (localStorage-backed)', async () => {

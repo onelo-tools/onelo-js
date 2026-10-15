@@ -9,30 +9,32 @@
  * did. Hover state is applied via JS listeners because inline styles can't hold a
  * `:hover` pseudo-class and these SDK modals inject no stylesheet.
  */
-export function createModalCloseButton(): HTMLButtonElement {
+import { NEUTRAL_BRAND_TOKENS, type BrandTokens } from '@onelo/core'
+
+export function createModalCloseButton(t: BrandTokens = NEUTRAL_BRAND_TOKENS): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.setAttribute('data-onelo-cancel', '')
   btn.setAttribute('aria-label', 'Close')
   btn.setAttribute('title', 'Close')
   btn.textContent = '✕'
 
-  // White-tint chip — the hosted modals sit on a dark (#111) ground, so a
-  // semi-transparent white surface + border stands out where a bare glyph didn't.
-  const bg = 'rgba(255,255,255,0.12)'
-  const border = 'rgba(255,255,255,0.22)'
+  // Chip painted from the app's brand tokens (#681): card surface, border
+  // ring, text glyph — readable on a light page as on a dark one.
+  const bg = t.card_bg
+  const border = t.border
   btn.style.cssText = [
     'position:absolute', 'top:16px', 'right:16px',
     'width:36px', 'height:36px',
     'display:flex', 'align-items:center', 'justify-content:center',
     `background:${bg}`, `border:1px solid ${border}`, 'border-radius:9999px',
-    'color:rgba(255,255,255,0.92)', 'font-size:15px', 'line-height:1',
+    `color:${t.text}`, 'font-size:15px', 'line-height:1',
     'cursor:pointer', 'padding:0', 'z-index:2',
     'transition:background 120ms ease,border-color 120ms ease,transform 120ms ease',
   ].join(';')
 
   btn.addEventListener('mouseenter', () => {
-    btn.style.background = 'rgba(255,255,255,0.22)'
-    btn.style.borderColor = 'rgba(255,255,255,0.4)'
+    btn.style.background = border
+    btn.style.borderColor = t.text_muted
     btn.style.transform = 'scale(1.06)'
   })
   btn.addEventListener('mouseleave', () => {

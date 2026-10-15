@@ -1,6 +1,7 @@
-import { httpGet, httpPost, OneloError } from '@onelo/core'
+import { httpGet, httpPost, OneloError, statusColor, type BrandTokens } from '@onelo/core'
 import type { OneloAuth } from '../auth/auth'
 import type { OneloEventStream } from '../core/event-stream'
+import { isUserRevokedRefusal } from '../core/user-revoked'
 
 /**
  * Legal-consent gate for the Web SDK — parity with Swift's
@@ -22,6 +23,42 @@ import type { OneloEventStream } from '../core/event-stream'
  */
 
 const SDK_PLATFORM = 'js'
+
+/**
+ * The consent card's styles, all from the app's brand tokens (#681): card
+ * surface/radius/text, the brand-coloured review link, the brand button for
+ * Accept, a bordered secondary Sign out, and the named danger status colour for
+ * errors. The scrim dims the host app and is not a brand surface.
+ */
+export function consentCardStyles(t: BrandTokens): Record<'overlay' | 'card' | 'heading' | 'body' | 'link' | 'error' | 'decline' | 'accept', string> {
+  return {
+    overlay: [
+      'position:fixed', 'inset:0', 'z-index:2147483647',
+      'display:flex', 'align-items:center', 'justify-content:center', 'padding:20px',
+      'background:rgba(0,0,0,0.6)',
+      `font-family:${t.body_font}`,
+    ].join(';'),
+    card: [
+      'width:100%', 'max-width:440px', 'box-sizing:border-box',
+      `background:${t.card_bg}`, `color:${t.text}`, `border-radius:${t.card_radius}px`, 'padding:28px',
+      `border:1px solid ${t.border}`, 'box-shadow:0 20px 60px rgba(0,0,0,0.35)',
+    ].join(';'),
+    heading: `margin:0 0 10px;font-size:19px;font-weight:600;line-height:1.25;font-family:${t.heading_font};`,
+    body: `margin:0 0 16px;font-size:14px;line-height:1.5;color:${t.text_muted};`,
+    link: `display:inline-block;margin:0 0 20px;font-size:13.5px;color:${t.brand};text-decoration:none;`,
+    error: `display:none;margin:0 0 14px;font-size:13px;line-height:1.4;color:${statusColor(t, 'danger')};`,
+    decline: [
+      'flex:0 0 auto', 'padding:11px 16px', `border-radius:${t.button_radius}px`, 'cursor:pointer',
+      'font-size:14px', 'font-weight:500', 'background:transparent',
+      `border:1px solid ${t.border}`, `color:${t.text}`,
+    ].join(';'),
+    accept: [
+      'flex:1', 'padding:11px 16px', `border-radius:${t.button_radius}px`, 'cursor:pointer',
+      'font-size:14px', 'font-weight:600', `background:${t.button_bg}`, `border:1px solid ${t.button_bg}`,
+      `color:${t.button_text}`,
+    ].join(';'),
+  }
+}
 
 export type OneloConsentEnforcement = 'block' | 'notify' | 'unknown'
 
@@ -155,7 +192,7 @@ export class OneloConsent {
   async acceptConsent(versionId: string): Promise<void> {
     const session = await this.auth.getSession()
     if (!session) throw OneloError.notAuthenticated()
-    const { status } = await httpPost(
+    const { status, json } = await httpPost(
       `${this.apiUrl}/v1/sdk/consent/accept`,
       { document_version_id: versionId },
       {
@@ -164,6 +201,7 @@ export class OneloConsent {
         'X-Onelo-Sdk-Platform': SDK_PLATFORM,
       },
     )
+    if (isUserRevokedRefusal(json)) throw OneloError.userRevoked()
     if (status === 401) throw OneloError.notAuthenticated()
     if (status < 200 || status >= 300) throw OneloError.server(`Failed to record consent: HTTP ${status}`)
   }
@@ -310,27 +348,19 @@ export class OneloConsent {
     overlay.setAttribute('data-onelo-consent-gate', '')
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
-    overlay.style.cssText = [
-      'position:fixed', 'inset:0', 'z-index:2147483647',
-      'display:flex', 'align-items:center', 'justify-content:center', 'padding:20px',
-      'background:rgba(0,0,0,0.6)',
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif',
-    ].join(';')
+    const st = consentCardStyles(this.auth.brand.current())
+    overlay.style.cssText = st.overlay
 
     const card = document.createElement('div')
-    card.style.cssText = [
-      'width:100%', 'max-width:440px', 'box-sizing:border-box',
-      'background:#ffffff', 'color:#18181b', 'border-radius:16px', 'padding:28px',
-      'box-shadow:0 20px 60px rgba(0,0,0,0.35)',
-    ].join(';')
+    card.style.cssText = st.card
 
     const h = document.createElement('h2')
     h.textContent = `${docTitle} — updated`
-    h.style.cssText = 'margin:0 0 10px;font-size:19px;font-weight:600;line-height:1.25;'
+    h.style.cssText = st.heading
 
     const p = document.createElement('p')
     p.textContent = `Please review and accept our updated ${docTitle} to keep using the app.`
-    p.style.cssText = 'margin:0 0 16px;font-size:14px;line-height:1.5;color:#3f3f46;'
+    p.style.cssText = st.body
 
     card.appendChild(h)
     card.appendChild(p)
@@ -343,12 +373,12 @@ export class OneloConsent {
       link.target = '_blank'
       link.rel = 'noopener noreferrer'
       link.textContent = `Review full ${docTitle} ↗`
-      link.style.cssText = 'display:inline-block;margin:0 0 20px;font-size:13.5px;color:#2563eb;text-decoration:none;'
+      link.style.cssText = st.link
       card.appendChild(link)
     }
 
     const error = document.createElement('p')
-    error.style.cssText = 'display:none;margin:0 0 14px;font-size:13px;line-height:1.4;color:#dc2626;'
+    error.style.cssText = st.error
 
     const row = document.createElement('div')
     row.style.cssText = 'display:flex;gap:10px;margin-top:4px;'
@@ -356,20 +386,12 @@ export class OneloConsent {
     const decline = document.createElement('button')
     decline.type = 'button'
     decline.textContent = 'Sign out'
-    decline.style.cssText = [
-      'flex:0 0 auto', 'padding:11px 16px', 'border-radius:10px', 'cursor:pointer',
-      'font-size:14px', 'font-weight:500', 'background:transparent',
-      'border:1px solid #d4d4d8', 'color:#3f3f46',
-    ].join(';')
+    decline.style.cssText = st.decline
 
     const accept = document.createElement('button')
     accept.type = 'button'
     accept.textContent = 'Accept & Continue'
-    accept.style.cssText = [
-      'flex:1', 'padding:11px 16px', 'border-radius:10px', 'cursor:pointer',
-      'font-size:14px', 'font-weight:600', 'background:#18181b', 'border:1px solid #18181b',
-      'color:#ffffff',
-    ].join(';')
+    accept.style.cssText = st.accept
 
     const els = { accept, decline, error }
     accept.addEventListener('click', () => { void this._handleConsentAction('accept', requirement, els) })

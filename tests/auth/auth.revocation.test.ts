@@ -27,6 +27,13 @@ const SESSION = {
   user: { id: 'user-1', email: 't@e.com', role: 'member' },
 } as never
 
+/** Make the stored access token due for refresh, so a scheduled retry must
+ *  really refresh (a still-fresh one is adopted without a second rotation). */
+async function expireStored(auth: OneloAuth) {
+  await (auth as unknown as { storage: { set(k: string, v: string): Promise<void> } })
+    .storage.set('onelo_expires_at', String(Math.floor(Date.now() / 1000) - 5))
+}
+
 function newAuth() {
   return new OneloAuth({ publishableKey: 'onelo_pk_test', apiUrl: 'https://api.onelo.tools' })
 }
@@ -34,7 +41,12 @@ function newAuth() {
 describe('OneloAuth — revocation & signout (P0 security)', () => {
   beforeEach(() => {
     mockFetch.mockReset()
-    mockFetch.mockImplementation((url: string) => (url.includes('/api/sdk/config') ? res(200, CONFIG) : res(204)))
+    mockFetch.mockImplementation((url: string) =>
+      // The Event Stream mints a Stream Token before it opens a socket, so a
+      // test that expects a connection has to answer the mint.
+      url.includes('/api/sdk/features/stream-token') ? res(200, { token: 'stream-tok', ttl: 300 })
+        : url.includes('/api/sdk/config') ? res(200, CONFIG)
+          : res(204))
   })
   afterEach(() => { vi.useRealTimers() })
 
@@ -122,13 +134,36 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     expect(session?.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000))
   })
 
-  it('refresh: a 401 session_compromised (detail.error) revokes + throws userRevoked', async () => {
+  // #548: only a real ban says "suspended". session_compromised (token reused
+  // outside the server's grace window), session_expired and session_invalid
+  // all END the session with the same neutral error.
+  it.each(['session_compromised', 'session_expired', 'session_invalid'])(
+    'refresh: a 401 %s clears, announces null and throws the neutral session_ended (not "suspended")',
+    async (code) => {
+      const auth = newAuth(); await auth.whenReady()
+      await auth.importSession(SESSION)
+      const seen: Array<unknown> = []
+      auth.onAuthStateChange((s) => seen.push(s))
+      mockFetch.mockImplementation((url: string) =>
+        url.includes('/api/sdk/auth/refresh') ? res(401, { detail: { error: code } }) : res(204),
+      )
+
+      const err = await auth.refreshSession().catch((e) => e)
+      expect(err).toBeInstanceOf(OneloError)
+      expect((err as OneloError).code).toBe('session_ended')
+      expect((err as OneloError).message).toBe('Your session ended — please sign in again')
+      expect((err as OneloError).message).not.toMatch(/suspended/i)
+      expect(auth.isUserRevoked).toBe(false)
+      expect(seen.at(-1)).toBeNull()
+      expect(await auth.getSession()).toBeNull()
+    },
+  )
+
+  it('refresh: a 403 banned is the ONLY refusal that says "suspended" (user_revoked + isUserRevoked)', async () => {
     const auth = newAuth(); await auth.whenReady()
     await auth.importSession(SESSION)
     mockFetch.mockImplementation((url: string) =>
-      url.includes('/api/sdk/auth/refresh')
-        ? res(401, { detail: { error: 'session_compromised' } })
-        : res(204),
+      url.includes('/api/sdk/auth/refresh') ? res(403, { detail: { error: 'banned' } }) : res(204),
     )
 
     await expect(auth.refreshSession()).rejects.toMatchObject({ code: 'user_revoked' })
@@ -136,18 +171,136 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     expect(await auth.getSession()).toBeNull()
   })
 
-  it('refresh: a benign 401 session_expired clears the session and returns null (no throw)', async () => {
+  it('getSession: a refused near-expiry refresh resolves null — never throws out to the caller', async () => {
     const auth = newAuth(); await auth.whenReady()
-    await auth.importSession(SESSION)
+    await auth.importSession({ ...(SESSION as object), expiresAt: Math.floor(Date.now() / 1000) + 10 } as never)
     mockFetch.mockImplementation((url: string) =>
-      url.includes('/api/sdk/auth/refresh')
-        ? res(401, { detail: { error: 'session_expired' } })
-        : res(204),
+      url.includes('/api/sdk/auth/refresh') ? res(401, { detail: { error: 'session_compromised' } }) : res(204),
     )
 
-    await expect(auth.refreshSession()).resolves.toBeNull()
+    await expect(auth.getSession()).resolves.toBeNull()
+  })
+
+  it('heartbeat: a refused refresh inside the timer is not an unhandled rejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown) => { unhandled.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const auth = newAuth(); await auth.whenReady()
+      vi.useFakeTimers()
+      // Expires well after the refresh timer would fire? No — make the heartbeat
+      // tick see a near-expiry token: expiry lands between lead time and the tick.
+      await auth.importSession({ ...(SESSION as object), expiresAt: Math.floor(Date.now() / 1000) + 13 * 60 + 30 } as never)
+      ;(auth as unknown as { clearRefreshTimer(): void }).clearRefreshTimer() // isolate the heartbeat path
+      mockFetch.mockImplementation((url: string) =>
+        url.includes('/api/sdk/auth/refresh') ? res(401, { detail: { error: 'session_compromised' } }) : res(204),
+      )
+      await vi.advanceTimersByTimeAsync(13 * 60 * 1000 + 100)
+      vi.useRealTimers()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(unhandled).toEqual([])
+      expect(await auth.getSession()).toBeNull()
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  // #547/#548: 503 refresh_unavailable means the rotation could not be
+  // recorded and the presented token is STILL VALID — never a sign-out.
+  it.each([
+    [503, { detail: { error: 'refresh_unavailable' } }],
+    [502, {}],
+    [429, { detail: 'Too Many Requests' }],
+  ])('refresh: a transient %s keeps the session, announces nothing, and retries with backoff', async (status, body) => {
+    const auth = newAuth(); await auth.whenReady()
+    vi.useFakeTimers()
+    await auth.importSession(SESSION)
+    const seen: Array<unknown> = []
+    auth.onAuthStateChange((s) => seen.push(s))
+    let calls = 0
+    mockFetch.mockImplementation((url: string) => {
+      if (!url.includes('/api/sdk/auth/refresh')) return res(204)
+      calls++
+      return calls === 1 ? res(status as number, body)
+        : res(200, {
+            session: { access_token: 'tok_new', refresh_token: 'ref_new', token_type: 'bearer', expires_in: 900 },
+            user: { id: 'user-1', email: 't@e.com', entitlement: null },
+          })
+    })
+
+    const err = await auth.refreshSession().catch((e) => e)
+    expect(err).toMatchObject({ code: 'server_error' })
+    await expireStored(auth)
+    expect(seen).toEqual([])                        // no onAuthStateChange(null)
     expect(auth.isUserRevoked).toBe(false)
-    expect(await auth.getSession()).toBeNull()
+    // Stored session untouched; a read inside the backoff does not refresh again.
+    expect((await auth.getSession())?.refreshToken).toBe('ref_xyz')
+    expect(calls).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(5_000)        // first retry: inside the 30 s grace window
+    expect(calls).toBe(2)
+    expect((await auth.getSession())?.refreshToken).toBe('ref_new')
+    ;(auth as unknown as { stopHeartbeat(): void; clearRefreshTimer(): void }).stopHeartbeat()
+    ;(auth as unknown as { clearRefreshTimer(): void }).clearRefreshTimer()
+  })
+
+  it('refresh: a lost response (network error) keeps the session and retries within the grace window', async () => {
+    const auth = newAuth(); await auth.whenReady()
+    vi.useFakeTimers()
+    await auth.importSession(SESSION)
+    let calls = 0
+    mockFetch.mockImplementation((url: string) => {
+      if (!url.includes('/api/sdk/auth/refresh')) return res(204)
+      calls++
+      return calls === 1 ? Promise.reject(new TypeError('Failed to fetch'))
+        : res(200, {
+            session: { access_token: 'tok_new', refresh_token: 'ref_new', token_type: 'bearer', expires_in: 900 },
+            user: { id: 'user-1', email: 't@e.com', entitlement: null },
+          })
+    })
+    await expect(auth.refreshSession()).rejects.toMatchObject({ code: 'network_error' })
+    await expireStored(auth)
+    expect((await auth.getSession())?.refreshToken).toBe('ref_xyz')
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(calls).toBe(2)                           // retried before the 30 s grace window closed
+    ;(auth as unknown as { stopHeartbeat(): void }).stopHeartbeat()
+    ;(auth as unknown as { clearRefreshTimer(): void }).clearRefreshTimer()
+  })
+
+  it('getSession: a transient failure on an EXPIRED token answers the stored session — never throws', async () => {
+    const auth = newAuth(); await auth.whenReady()
+    await auth.importSession({ ...(SESSION as object), expiresAt: Math.floor(Date.now() / 1000) - 5 } as never)
+    mockFetch.mockImplementation((url: string) =>
+      url.includes('/api/sdk/auth/refresh') ? res(503, { detail: { error: 'refresh_unavailable' } }) : res(204))
+    const first = await auth.getSession()          // triggers the refresh → 503
+    expect(first?.refreshToken).toBe('ref_xyz')
+    const during = await auth.getSession()         // inside the backoff
+    expect(during?.refreshToken).toBe('ref_xyz')
+    ;(auth as unknown as { stopHeartbeat(): void }).stopHeartbeat()
+    ;(auth as unknown as { clearRefreshTimer(): void }).clearRefreshTimer()
+  })
+
+  it('refresh: backoff grows while the refresh keeps failing (no tight loop)', async () => {
+    const auth = newAuth(); await auth.whenReady()
+    vi.useFakeTimers()
+    await auth.importSession(SESSION)
+    let calls = 0
+    mockFetch.mockImplementation((url: string) => {
+      if (!url.includes('/api/sdk/auth/refresh')) return res(204)
+      calls++
+      return res(503, { detail: { error: 'refresh_unavailable' } })
+    })
+    await auth.refreshSession().catch(() => {})
+    await expireStored(auth)
+    await vi.advanceTimersByTimeAsync(5_000)   // retry 1 at +5 s
+    await vi.advanceTimersByTimeAsync(10_000)  // retry 2 at +15 s
+    await vi.advanceTimersByTimeAsync(20_000)  // retry 3 at +35 s
+    expect(calls).toBe(4)
+    await vi.advanceTimersByTimeAsync(39_000)  // retry 4 is due at +75 s, not before
+    expect(calls).toBe(4)
+    expect((await auth.getSession())?.refreshToken).toBe('ref_xyz') // still signed in
+    ;(auth as unknown as { stopHeartbeat(): void }).stopHeartbeat()
+    ;(auth as unknown as { clearRefreshTimer(): void }).clearRefreshTimer()
   })
 
   it('A1: getSession arms the heartbeat on restore when none is running', async () => {
@@ -271,6 +424,7 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     await auth.importSession(withEntitlement('active')) // user-1
     const seen: Array<unknown> = []; auth.onAuthStateChange((s) => seen.push(s))
     stream.start('user-1')
+    await flush() // the mint resolves, then the socket opens
 
     MockES.instances.at(-1)!.emit('session.revoked', { app_user_id: 'user-1', reason: 'refund_lapsed_no_free_tier' })
     await flush()
@@ -288,6 +442,7 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     auth.attachEventStream(stream)
     await auth.importSession(withEntitlement('active')) // user-1
     stream.start('user-1')
+    await flush() // the mint resolves, then the socket opens
 
     MockES.instances.at(-1)!.emit('session.revoked', { app_user_id: 'someone-else' })
     await flush()
@@ -346,6 +501,7 @@ describe('OneloAuth — revocation & signout (P0 security)', () => {
     auth.attachEventStream(stream)
     const seen: Array<unknown> = []; auth.onAuthStateChange((s) => seen.push(s))
     stream.start(null)
+    await flush() // the mint resolves, then the socket opens
 
     MockES.instances.at(-1)!.emit('session.revoked', { app_user_id: 'user-1' })
     await flush()

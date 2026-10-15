@@ -16,7 +16,9 @@ describe('createModalCloseButton', () => {
     expect(btn.getAttribute('aria-label')).toBe('Close')
     expect(btn.getAttribute('title')).toBe('Close')
     // The old faint version had transparent bg + no border; the chip must have both.
-    expect(btn.style.background).toMatch(/rgba\(255,\s?255,\s?255/)
+    // #681: the chip is the brand's card surface (neutral set before config).
+    expect(btn.style.background).toBe('rgb(26, 26, 26)')
+    expect(btn.style.border).toContain('1px solid')
     expect(btn.style.borderRadius).toBe('9999px')
     expect(btn.style.width).toBe('36px')
   })

@@ -7,12 +7,13 @@ vi.mock('@onelo/core', async () => {
 })
 
 import { OneloConsent } from './consent'
+import { BrandSource } from '@onelo/core'
 import { httpGet, httpPost } from '@onelo/core'
 
 const SESSION = { accessToken: 'tok', user: { id: 'u1', email: 'a@b.com' } }
 
 function makeAuth(session: unknown = SESSION) {
-  return { getSession: vi.fn(async () => session), signOut: vi.fn(async () => {}) }
+  return { getSession: vi.fn(async () => session), signOut: vi.fn(async () => {}), brand: new BrandSource() }
 }
 function reqRow(o: Record<string, unknown> = {}) {
   return {

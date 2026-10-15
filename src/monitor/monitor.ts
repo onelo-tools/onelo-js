@@ -1,5 +1,6 @@
 import { version as SDK_VERSION } from '../../package.json'
 import { scrubText, scrubMeta } from './scrubber'
+import { classifyErrorOrigin, type ErrorOrigin } from '@onelo/core'
 
 export interface MonitorEventOptions {
   ok: boolean
@@ -145,10 +146,12 @@ function _installGlobalHandlers(): void {
       _activeMonitor?._onGlobalError(
         e.reason instanceof Error ? e.reason.message : String(e.reason),
         e.reason instanceof Error ? e.reason.stack : undefined,
+        classifyErrorOrigin(e.reason),
       )
     })
     window.addEventListener('error', (e) => {
-      _activeMonitor?._onGlobalError(e.message ?? 'Unknown error', e.error instanceof Error ? e.error.stack : undefined)
+      const stack = e.error instanceof Error ? e.error.stack : undefined
+      _activeMonitor?._onGlobalError(e.message ?? 'Unknown error', stack, classifyErrorOrigin(e.error, stack))
     })
     // Deliver anything buffered before the page unloads.
     const beacon = () => { void _activeMonitor?.flush(true) }
@@ -171,7 +174,7 @@ function _installGlobalHandlers(): void {
     // (Browser rejections are safe to observe — the page doesn't crash on them.)
     proc.on('uncaughtExceptionMonitor', (err: unknown) => {
       const { message, stack } = _extractError(err)
-      _activeMonitor?._onGlobalError(message, stack)
+      _activeMonitor?._onGlobalError(message, stack, classifyErrorOrigin(err))
     })
   }
 }
@@ -505,7 +508,9 @@ export class OneloMonitor {
    * `_installGlobalHandlers`). Only the current active monitor receives these.
    * `_push` already flushes on a `global_error` source.
    */
-  _onGlobalError(message: string, stack?: string): void {
-    this._push('unhandled', false, undefined, message, this._withError(undefined, stack), 'global_error')
+  _onGlobalError(message: string, stack?: string, origin: ErrorOrigin = 'app'): void {
+    // meta.origin: whose error this is (#548). The backend keeps the SDK's own
+    // errors out of the developer's Monitor data — see classifyErrorOrigin.
+    this._push('unhandled', false, undefined, message, { ...this._withError(undefined, stack), origin }, 'global_error')
   }
 }

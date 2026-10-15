@@ -72,7 +72,11 @@ describe('AuthModal — modes', () => {
     expect(skeleton()?.getAttribute('srcdoc')).toContain('onelo-shimmer')
 
     window.dispatchEvent(
-      new MessageEvent('message', { data: { type: 'onelo:ready' }, origin: new URL(HOSTED).origin }),
+      new MessageEvent('message', {
+        data: { type: 'onelo:ready' },
+        origin: new URL(HOSTED).origin,
+        source: (document.querySelector('iframe:not([aria-hidden="true"])') as HTMLIFrameElement).contentWindow,
+      }),
     )
     expect(skeleton()).toBeNull()
     modal.close()
@@ -86,7 +90,11 @@ describe('AuthModal — modes', () => {
     expect(x()?.style.display).toBe('none')
 
     window.dispatchEvent(
-      new MessageEvent('message', { data: { type: 'onelo:ready' }, origin: new URL(HOSTED).origin }),
+      new MessageEvent('message', {
+        data: { type: 'onelo:ready' },
+        origin: new URL(HOSTED).origin,
+        source: (document.querySelector('iframe:not([aria-hidden="true"])') as HTMLIFrameElement).contentWindow,
+      }),
     )
     // Still hidden after the hosted page reports ready.
     expect(x()?.style.display).toBe('none')

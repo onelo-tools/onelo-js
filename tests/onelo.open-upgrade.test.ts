@@ -23,14 +23,21 @@ class Stub {
     hasActiveAccess: async () => this.entitled,
     isStoreAvailable: () => this.storeAvailable,
   }
-  customerPortal = { open: async () => { this.opened.push('portal') } }
+  customerPortal = {
+    open: async () => { this.opened.push('portal') },
+    openUpgrade: async () => { this.opened.push('upgrade') },
+  }
   paywall = { openStore: async () => { this.opened.push('store') } }
 
   // Mirrors src/onelo.ts openUpgrade.
   async openUpgrade(): Promise<void> {
     await this.auth.whenReady()
     if (await this.auth.hasActiveAccess()) {
-      await this.customerPortal.open()
+      if (!this.auth.isStoreAvailable()) {
+        await this.customerPortal.open()
+        return
+      }
+      await this.customerPortal.openUpgrade()
     } else {
       if (!this.auth.isStoreAvailable()) return
       await this.paywall.openStore()
@@ -57,5 +64,11 @@ describe('openUpgrade', () => {
     const o = new Stub(true, false)
     await o.openUpgrade()
     expect(o.opened).toEqual(['portal'])
+  })
+
+  it('opens the resolved upgrade for a subscriber under "Show the store" (#670)', async () => {
+    const o = new Stub(true, true)
+    await o.openUpgrade()
+    expect(o.opened).toEqual(['upgrade'])
   })
 })

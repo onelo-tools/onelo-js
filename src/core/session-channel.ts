@@ -32,6 +32,15 @@
  * storage path — putting one in a channel every same-origin script can subscribe
  * to would hand a credential to the whole page.
  *
+ * ACKNOWLEDGED, FOR THE WORDING ONLY (#535)
+ * ----------------------------------------
+ * A waiting tab answers `SESSION_RECEIVED`. The announcing tab uses that answer
+ * for ONE thing: whether it may say "continue in the tab you started from". It
+ * used to say that unconditionally, and when the link was opened in another
+ * browser — where no tab can hear — it pointed the user at a tab that was never
+ * told. Its BEHAVIOUR does not change with the answer: it is a messenger either
+ * way, which is the 2026-08-19 rule above.
+ *
  * It MAY carry a `surfaceUrl`: the hosted screen the other tab was told to show
  * when the Access Gate refused entry ("No active plan", or the store). That URL
  * has to travel, because it cannot be re-derived: with no plan there is no
@@ -45,6 +54,13 @@ const CHANNEL = 'onelo_auth'
 
 /** Sent by the tab that just completed a sign-in. */
 export const SESSION_CREATED = 'onelo:session-created'
+
+/** Sent back by a tab that was waiting and took the announcement. */
+export const SESSION_RECEIVED = 'onelo:session-received'
+
+/** How long the announcing tab listens for an answer. A waiting tab answers in
+ *  the same event-loop turn it hears, so this only bounds the silence. */
+export const ACK_WAIT_MS = 1500
 
 function open(): BroadcastChannel | null {
   // Safari gained BroadcastChannel in 15.4. Older browsers get no hand-off — the
@@ -61,24 +77,39 @@ function open(): BroadcastChannel | null {
 /**
  * Announce to other tabs that a magic-link sign-in finished here.
  *
- * Fire-and-forget: the announcing tab's own behaviour does not depend on whether
- * anyone heard. It shows its farewell notice either way, so there is nothing to
- * wait for and no timeout to get wrong.
+ * Resolves to whether a waiting tab acknowledged within `waitMs`. Callers that
+ * do not care may ignore the promise; nothing waits on it by default.
  *
  * `surfaceUrl` is the hosted screen the Access Gate named when it refused entry.
  * It has to travel because it cannot be re-derived: a refused user has no
  * session, so a tab that asks the backend is told "nobody is signed in".
  */
-export function publishSessionCreated(surfaceUrl?: string): void {
+export function publishSessionCreated(surfaceUrl?: string, waitMs = ACK_WAIT_MS): Promise<boolean> {
   const ch = open()
-  if (!ch) return
-  try {
-    ch.postMessage({ type: SESSION_CREATED, surfaceUrl })
-  } finally {
-    // One-shot: nothing here needs a long-lived channel, and leaving one open
-    // keeps a listener alive in a page that may be about to navigate.
-    ch.close()
-  }
+  if (!ch) return Promise.resolve(false)
+  return new Promise<boolean>((resolve) => {
+    let done = false
+    const finish = (heard: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      ch.removeEventListener('message', onMessage)
+      // One-shot: leaving a channel open keeps a listener alive in a page that
+      // may be about to navigate.
+      try { ch.close() } catch { /* already closed */ }
+      resolve(heard)
+    }
+    const onMessage = (e: MessageEvent) => {
+      if ((e.data as { type?: string })?.type === SESSION_RECEIVED) finish(true)
+    }
+    ch.addEventListener('message', onMessage)
+    const timer = setTimeout(() => finish(false), waitMs)
+    try {
+      ch.postMessage({ type: SESSION_CREATED, surfaceUrl })
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 /**
@@ -94,6 +125,9 @@ export function subscribeSessionCreated(
 
   const handler = (e: MessageEvent) => {
     if ((e.data as { type?: string })?.type !== SESSION_CREATED) return
+    // Answer BEFORE handing over: `onSession` settles the modal, which closes
+    // this channel, and a closed channel cannot answer.
+    try { ch.postMessage({ type: SESSION_RECEIVED }) } catch { /* wording only */ }
     onSession((e.data as { surfaceUrl?: string })?.surfaceUrl)
   }
   ch.addEventListener('message', handler)

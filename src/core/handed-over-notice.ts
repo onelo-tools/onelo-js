@@ -11,10 +11,12 @@
  * user is not looking at two running copies of the same app. Adrian, 2026-08-18:
  * "w miejscu po magic linku co najwyżej powinniśmy widzieć wiadomość".
  *
- * Deliberately plain and unbranded: it appears for a second before the user
- * switches tabs, and dressing it up would make it read like a page that wants
- * something from them.
+ * Deliberately plain: it appears for a second before the user switches tabs,
+ * and dressing it up would make it read like a page that wants something from
+ * them. Only its ground, text and font come from the app's brand tokens (#681);
+ * the first cover goes up before config arrives, so it starts neutral.
  */
+import { NEUTRAL_BRAND_TOKENS, spinnerCss, type BrandTokens } from '@onelo/core'
 
 const ID = 'onelo-handed-over'
 
@@ -46,11 +48,14 @@ function stopWatching(): void {
  * The wording is honest about the state at THIS point: the exchange has not
  * happened yet, so it cannot claim a sign-in.
  */
-export function coverPage(): void {
+export function coverPage(t: BrandTokens = NEUTRAL_BRAND_TOKENS, heading = 'Signing you in…'): void {
   // `watch` from the very first moment: the app boots UNDER this cover and many
   // apps paint by replacing <body>, which would tear it out and produce exactly
   // the flash this prevents.
-  render('Signing you in…', null, { watch: true, pending: true })
+  // #728: `heading` is localized by the store return (the store's language),
+  // and the pending cover carries the hosted pages' spinner, so the buyer's
+  // last step looks like the checkout steps before it.
+  render(heading, null, t, { watch: true, pending: true })
 }
 
 /** Take the cover away — nobody was waiting, so this tab becomes the app. */
@@ -61,15 +66,26 @@ export function removeCover(): void {
   document.getElementById(ID)?.remove()
 }
 
-export function showHandedOverNotice(appName?: string | null): void {
-  render("You're signed in", appName ?? null, { watch: true })
+/**
+ * @param waitingTab Whether a tab that was waiting acknowledged the hand-off.
+ *   `true` names that tab; `false` never does — there is no such tab to point at
+ *   (the link was opened after the original tab was closed); `null` while the
+ *   answer is still out, so nothing is claimed yet (#535).
+ */
+export function showHandedOverNotice(
+  appName?: string | null,
+  waitingTab: boolean | null = true,
+  t: BrandTokens = NEUTRAL_BRAND_TOKENS,
+): void {
+  render("You're signed in", appName ?? null, t, { watch: true, pending: waitingTab === null, waitingTab: waitingTab !== false })
 }
 
 
 function render(
   heading: string,
   appName: string | null,
-  { watch = false, pending = false }: { watch?: boolean; pending?: boolean } = {},
+  t: BrandTokens,
+  { watch = false, pending = false, waitingTab = true }: { watch?: boolean; pending?: boolean; waitingTab?: boolean } = {},
 ): void {
   if (typeof document === 'undefined' || !document.body) return
 
@@ -78,9 +94,14 @@ function render(
   // would double the backdrop and darken the text.
   const existing = document.getElementById(ID)
   if (existing) {
-    const [h, p] = existing.children as unknown as HTMLElement[]
+    const h = existing.querySelector('h1')
+    const p = existing.querySelector('p')
     if (h) h.textContent = heading
-    if (p) p.textContent = bodyText(appName, pending)
+    if (p) p.textContent = bodyText(appName, pending, waitingTab)
+    existing.style.background = t.page_bg
+    existing.style.color = t.text
+    // The spinner belongs to the pending state only.
+    if (!pending) existing.querySelector('[data-onelo-spinner]')?.remove()
     if (watch) keepAttached(existing)
     return
   }
@@ -88,13 +109,14 @@ function render(
   const root = document.createElement('div')
   root.id = ID
   root.setAttribute('role', 'status')
+  root.setAttribute('aria-live', 'polite')
   Object.assign(root.style, {
     position: 'fixed',
     inset: '0',
     // Opaque, not a translucent scrim: the app underneath has already booted
     // and must not be readable or clickable through this.
-    background: '#111111',
-    color: '#ffffff',
+    background: t.page_bg,
+    color: t.text,
     zIndex: '2147483647',
     display: 'flex',
     flexDirection: 'column',
@@ -102,7 +124,7 @@ function render(
     justifyContent: 'center',
     textAlign: 'center',
     padding: '24px',
-    font: '400 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    font: `400 15px/1.5 ${t.body_font}`,
   } as Partial<CSSStyleDeclaration>)
 
   const title = document.createElement('h1')
@@ -113,13 +135,26 @@ function render(
   } as Partial<CSSStyleDeclaration>)
 
   const body = document.createElement('p')
-  body.textContent = bodyText(appName, pending)
+  body.textContent = bodyText(appName, pending, waitingTab)
   Object.assign(body.style, {
     margin: '0',
     maxWidth: '320px',
-    opacity: '0.6',
+    color: t.text_muted,
   } as Partial<CSSStyleDeclaration>)
 
+  if (pending) {
+    // #728: the hosted pages' ring (brand arc on the token track).
+    const spin = document.createElement('div')
+    spin.setAttribute('data-onelo-spinner', '')
+    spin.setAttribute('aria-hidden', 'true')
+    const css = document.createElement('style')
+    css.textContent = spinnerCss(t, 'onelo-handed-over-spin')
+    const ring = document.createElement('div')
+    ring.className = 'onelo-handed-over-spin'
+    ring.style.margin = '0 auto 16px'
+    spin.append(css, ring)
+    root.append(spin)
+  }
   root.append(title, body)
   document.body.appendChild(root)
   if (watch) keepAttached(root)
@@ -128,10 +163,18 @@ function render(
 /** Names the other tab rather than saying "the app": the user is looking at two
  *  tabs that appear identical and has to pick one. Empty while still signing in
  *  — there is nothing useful to say yet. */
-function bodyText(appName: string | null, pending: boolean): string {
+function bodyText(appName: string | null, pending: boolean, waitingTab = true): string {
   // Nothing useful to say while the exchange is still in flight, and the heading
   // already carries it.
   if (pending) return ''
+  // Nobody answered: do not send the user looking for a tab that was never told
+  // (#535). The session is in this browser's storage, so opening the app again
+  // finds it.
+  if (!waitingTab) {
+    return appName
+      ? `You can close this tab and open ${appName} again.`
+      : 'You can close this tab and open the app again.'
+  }
   return appName
     ? `Continue in the ${appName} tab you started from — you can close this one.`
     : 'Continue in the tab you started from — you can close this one.'

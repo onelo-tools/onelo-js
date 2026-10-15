@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Onelo } from './onelo'
 
-// Onelo.openUpgrade() must route to a WORKING web surface by billing state:
-//   active subscriber → customerPortal.open()  (Portal "Change plan")
-//   otherwise         → paywall.openStore()     (buy a plan)
-// It must NOT drive /upgrade-initiate's store_switch (that hangs the iframe modal
-// on the plan-switch terminals — the whole reason this router exists).
+// Onelo.openUpgrade() routes by billing state:
+//   entitled user     → customerPortal.openUpgrade()  (/upgrade-initiate's answer,
+//                       opened directly — no Customer Portal page in front, #670)
+//   entitled, "Sign in only" → customerPortal.open()  (manage only; no store)
+//   otherwise         → paywall.openStore()           (buy a plan)
 describe('Onelo.openUpgrade — web routing', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
@@ -16,18 +16,32 @@ describe('Onelo.openUpgrade — web routing', () => {
     return new Onelo({ publishableKey: 'onelo_pk_test_x', apiUrl: 'https://api.onelo.tools' })
   }
 
-  it('routes an active subscriber to the Customer Portal (not the store)', async () => {
+  it('sends an entitled user straight to the resolved upgrade — not through the portal page (#670)', async () => {
     const onelo = makeOnelo()
     vi.spyOn(onelo.auth, 'hasActiveAccess').mockResolvedValue(true)
+    const upgrade = vi.spyOn(onelo.customerPortal, 'openUpgrade').mockResolvedValue(undefined)
     const portal = vi.spyOn(onelo.customerPortal, 'open').mockResolvedValue(undefined)
     const store = vi.spyOn(onelo.paywall, 'openStore').mockResolvedValue(null)
 
     await onelo.openUpgrade('pro') // plan arg is advisory on web — ignored
 
-    expect(portal).toHaveBeenCalledTimes(1)
-    // Subscriber lands straight in the plan picker, not the portal home.
-    expect(portal).toHaveBeenCalledWith({ intent: 'change_plan' })
+    expect(upgrade).toHaveBeenCalledTimes(1)
+    expect(portal).not.toHaveBeenCalled()
     expect(store).not.toHaveBeenCalled()
+    onelo.destroy()
+  })
+
+  it('keeps an entitled user of a "Sign in only" app on the portal (manage, never sell)', async () => {
+    const onelo = makeOnelo()
+    vi.spyOn(onelo.auth, 'hasActiveAccess').mockResolvedValue(true)
+    vi.spyOn(onelo.auth, 'isStoreAvailable').mockReturnValue(false)
+    const upgrade = vi.spyOn(onelo.customerPortal, 'openUpgrade').mockResolvedValue(undefined)
+    const portal = vi.spyOn(onelo.customerPortal, 'open').mockResolvedValue(undefined)
+
+    await onelo.openUpgrade()
+
+    expect(portal).toHaveBeenCalledWith({ intent: 'change_plan' })
+    expect(upgrade).not.toHaveBeenCalled()
     onelo.destroy()
   })
 
@@ -44,7 +58,7 @@ describe('Onelo.openUpgrade — web routing', () => {
     onelo.destroy()
   })
 
-  it('never has a paywall.openUpgrade (store_switch) method on web', () => {
+  it('keeps the upgrade on the portal modal, not a second paywall.openUpgrade', () => {
     const onelo = makeOnelo()
     expect((onelo.paywall as unknown as { openUpgrade?: unknown }).openUpgrade).toBeUndefined()
     onelo.destroy()

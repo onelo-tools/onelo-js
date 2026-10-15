@@ -100,3 +100,31 @@ describe('the surface travels with the announcement', () => {
     unsubscribe()
   })
 })
+
+// #535: the announcing tab may only say "continue in the tab you started from"
+// when a waiting tab answered. A link opened in another browser reaches nobody,
+// and the old wording then sent the user looking for a tab that was never told.
+describe('acknowledgement (wording only)', () => {
+  it('resolves true when a waiting tab took the announcement', async () => {
+    const unsubscribe = subscribeSessionCreated(() => {})
+    await expect(publishSessionCreated(undefined, 50)).resolves.toBe(true)
+    unsubscribe()
+  })
+
+  it('resolves false when nobody is waiting', async () => {
+    await expect(publishSessionCreated(undefined, 20)).resolves.toBe(false)
+  })
+
+  it('resolves false where BroadcastChannel does not exist', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined)
+    await expect(publishSessionCreated()).resolves.toBe(false)
+  })
+
+  it('closes its channel once answered', async () => {
+    const unsubscribe = subscribeSessionCreated(() => {})
+    await publishSessionCreated(undefined, 50)
+    // The publisher's channel is the second one created (the subscriber's first).
+    expect(FakeChannel.live[1].closed).toBe(true)
+    unsubscribe()
+  })
+})

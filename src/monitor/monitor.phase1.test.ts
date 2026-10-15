@@ -142,6 +142,25 @@ describe('OneloMonitor — PII scrubbing + dual-instance global handlers (Phase 
     vi.stubGlobal('navigator', undefined)
   })
 
+  it('uncaught errors carry meta.origin: a OneloError rejection is the SDK\'s, an app error is the app\'s (#548)', async () => {
+    const m = freshMonitor(PK, API)
+    const sent: Array<{ featureName: string; meta: Record<string, unknown> }> = []
+    vi.spyOn(m as unknown as { _sendBeacon: (u: string, e: never[]) => void }, '_sendBeacon')
+      .mockImplementation((_u, events) => { sent.push(...(events as never[])) })
+    const { OneloError } = await import('@onelo/core')
+    win.dispatch('unhandledrejection', { reason: OneloError.sessionEnded() })
+    await tick()
+    // An app error: thrown in the app's own file (a real app never lives in
+    // the SDK's package directory, which is where this test file sits).
+    const appErr = new Error('app boom')
+    appErr.stack = 'Error: app boom\n    at onClick (https://app.example/assets/main.js:10:5)'
+    win.dispatch('error', { message: 'app boom', error: appErr })
+    await tick()
+    const origins = sent.filter((e) => e.featureName === 'unhandled').map((e) => e.meta.origin)
+    expect(origins).toEqual(['onelo_sdk', 'app'])
+    m.destroy()
+  })
+
   it('destroy() flushes the final batch via text/plain sendBeacon (teardown-safe, no preflight)', async () => {
     const beacon = vi.fn().mockReturnValue(true)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
