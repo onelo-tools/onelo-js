@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.80.0] — 2026-10-07
+## [0.82.0] — 2026-10-24
+
+### Added
+
+- The sign-in loading skeleton now has the hosted form's shape: one placeholder per enabled social provider plus the "or" divider, and the magic-link row when passwordless sign-in is on (from `/api/sdk/config`).
+
+### Fixed
+
+- On a light page the skeleton's logo, heading, subheading, labels and links are visible (they were painted white on white).
+
+## [0.81.0-staging] — 2026-10-23
+
+### Added
+
+- `onelo.affiliates.capture({ consent })` captures an Affiliate referral in your
+  own app, with no paste-in script (#929). It reads `?ref=<code>` or
+  `?onelo_click=<id>` from the address. Without consent nothing is stored on
+  the device. With consent the click is kept and tied to the user who signs in,
+  so their purchase is attributed whichever checkout opens.
+
+## [0.80.0-staging] — 2026-10-07
 
 ### Changed
 

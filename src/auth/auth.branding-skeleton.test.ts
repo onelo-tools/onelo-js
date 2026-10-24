@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OneloAuth } from './auth'
+import { parseBrandTokens, skeletonSoftFill } from '@onelo/core'
 
 const API = 'https://backend.test'
 const HOSTED = 'https://st.onelo.tools/auth/hosted?token=art_test'
@@ -82,7 +83,8 @@ describe('SDK auth skeleton first paint', () => {
     normalizedPageBg.style.background = tokens.page_bg
     expect(overlay.style.background).toBe(normalizedPageBg.style.background)
     expect(skeleton.srcdoc).toContain(`body{background:${tokens.page_bg}`)
-    expect(skeleton.srcdoc).toContain(`background-color:${tokens.card_bg}`)
+    // #948: soft blocks use the light-aware fill (border on a light page).
+    expect(skeleton.srcdoc).toContain(`.sk{background-color:${skeletonSoftFill(parseBrandTokens(tokens)!)}`)
     expect(skeleton.srcdoc).toContain(`border-radius:${tokens.button_radius}px`)
     expect(skeleton.srcdoc).toContain(`border-radius:${tokens.card_radius}px`)
     expect(hosted.style.opacity).toBe('0')
@@ -115,7 +117,8 @@ describe('SDK auth skeleton first paint', () => {
       name: 'legacy colors',
       config: { primary_color: '#0055ff', checkout_bg_color: '#ffffff' },
       page: '#ffffff',
-      card: '#ffffff',
+      // #948: a light page paints the soft blocks with the border colour.
+      card: '#e4e4e7',
       button: '#0055ff',
     },
     {
@@ -145,8 +148,35 @@ describe('SDK auth skeleton first paint', () => {
     normalizedPage.style.background = page
     expect(overlay.style.background).toBe(normalizedPage.style.background)
     expect(skeleton.srcdoc).toContain(`body{background:${page}`)
-    expect(skeleton.srcdoc).toContain(`background-color:${card}`)
+    expect(skeleton.srcdoc).toContain(`.sk{background-color:${card}`)
     expect(auth.brand.current().button_bg).toBe(button)
+
+    container.querySelector<HTMLButtonElement>('[data-onelo-cancel]')?.click()
+    await expect(pending).resolves.toBeNull()
+  })
+
+  // #948: the skeleton takes the hosted form's shape from /api/sdk/config.
+  it.each([
+    { providers: [], magic: false, pills: 0 },
+    { providers: ['google'], magic: true, pills: 1 },
+    { providers: ['google', 'github', 'apple'], magic: false, pills: 3 },
+  ])('draws $pills pills, magic link $magic, from config', async ({ providers, magic, pills }) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      return { status: 200, ok: true, json: async () => url.includes('/api/sdk/config')
+        ? { supabase_url: 'https://project.supabase.co', supabase_anon_key: 'anon', tenant_id: 'tenant-1', oauth_providers: providers, magic_link_enabled: magic }
+        : { action: 'present', surface: 'sign_in', url: HOSTED } }
+    }) as unknown as typeof fetch)
+
+    const auth = new OneloAuth({ apiUrl: API, publishableKey: 'onelo_pk_test' })
+    await auth.whenReady()
+    expect(auth.authSkeletonShape()).toEqual({ socialCount: pills, magicLink: magic })
+    const pending = auth.loadAuthView()
+    await vi.waitFor(() => expect(document.querySelector('iframe[aria-hidden="true"]')).toBeTruthy())
+    const container = (document.body.querySelector('div') as HTMLElement).firstElementChild as HTMLElement
+    const html = (container.querySelector('iframe[aria-hidden="true"]') as HTMLIFrameElement).srcdoc
+    expect(html.split('class="strong pill"').length - 1).toBe(pills)
+    expect(html.includes('class="sk magic"')).toBe(magic)
 
     container.querySelector<HTMLButtonElement>('[data-onelo-cancel]')?.click()
     await expect(pending).resolves.toBeNull()

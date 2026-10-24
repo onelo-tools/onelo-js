@@ -8,7 +8,7 @@ import { coverPage, removeCover, showHandedOverNotice } from '../core/handed-ove
 import { forgetStoreReturnLook, recallStoreReturnLook, signingInText } from '../core/store-return-look'
 import { OneloEventStream } from '../core/event-stream'
 import { isUserRevokedRefusal } from '../core/user-revoked'
-import { AuthModal, isExpiredAuthError, type AuthPresentMode } from './auth-modal'
+import { AuthModal, MINIMAL_AUTH_SKELETON_SHAPE, isExpiredAuthError, type AuthPresentMode, type AuthSkeletonShape } from './auth-modal'
 import type { PlanChange } from '../core/plan-change'
 import {
   exchangeExternalToken,
@@ -206,6 +206,15 @@ export class OneloAuth {
    *  passes its own; a standalone OneloAuth keeps a private one. */
   readonly brand: BrandSource
 
+  /** #948: the hosted form's sign-in methods for the loading skeleton. Before
+   *  config (or on an older backend) the minimal shape: never a pill the page
+   *  will not draw. */
+  authSkeletonShape(): AuthSkeletonShape {
+    const c = this.resolvedConfig
+    if (!c) return MINIMAL_AUTH_SKELETON_SHAPE
+    return { socialCount: c.oauthProviders?.length ?? 0, magicLink: c.magicLinkEnabled === true }
+  }
+
   constructor(config: OneloConfig, brand: BrandSource = new BrandSource()) {
     this.brand = brand
     if (!config.apiUrl) throw new Error('[Onelo] apiUrl is required')
@@ -269,6 +278,9 @@ export class OneloAuth {
         pageBackgroundColor: brandTokens.page_bg,
         brandTokens,
         signupMarketingConsent: signupMarketingConsentFromConfig(j),
+        // #948: the sign-in skeleton draws the hosted form's shape from these.
+        oauthProviders: Array.isArray(j['oauth_providers']) ? (j['oauth_providers'] as string[]) : [],
+        magicLinkEnabled: j['magic_link_enabled'] === true,
       }
       this.allowCustomBranding = this.resolvedConfig.allowCustomBranding
       if (this.resolvedConfig.appName) this.appName = this.resolvedConfig.appName
@@ -385,7 +397,7 @@ export class OneloAuth {
 
     // present → open the hosted flow; it chains to the store itself when needed,
     // so we wait for exactly ONE final code and exchange it.
-    const modal = new AuthModal(this.brand)
+    const modal = new AuthModal(this.brand, () => this.authSkeletonShape())
     const result = await modal.open(this.withReturnTo(decision.url), mode, {
       watchCrossTabSession: true,
       renewPortal: this.renewPortal ?? undefined,

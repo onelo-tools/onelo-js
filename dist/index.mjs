@@ -169,7 +169,7 @@ var require_http = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.httpGet = httpGet5;
-    exports.httpPost = httpPost7;
+    exports.httpPost = httpPost8;
     exports.checkHostedFlowRequired = checkHostedFlowRequired2;
     var types_1 = require_types();
     async function httpGet5(url, headers) {
@@ -181,7 +181,7 @@ var require_http = __commonJS({
       }
       return readBody(res);
     }
-    async function httpPost7(url, body, headers, signal) {
+    async function httpPost8(url, body, headers, signal) {
       let res;
       try {
         res = await fetch(url, {
@@ -370,6 +370,7 @@ var require_brand_tokens = __commonJS({
     exports.brandTokensFromResponse = brandTokensFromResponse2;
     exports.withAlpha = withAlpha;
     exports.statusColor = statusColor2;
+    exports.skeletonSoftFill = skeletonSoftFill;
     exports.skeletonCss = skeletonCss2;
     exports.spinnerCss = spinnerCss3;
     exports.portalSkeletonHtml = portalSkeletonHtml2;
@@ -521,11 +522,15 @@ var require_brand_tokens = __commonJS({
       }
     };
     exports.BrandSource = BrandSource7;
+    function skeletonSoftFill(t) {
+      return t.light_bg ? t.border : t.card_bg;
+    }
     function skeletonCss2(t) {
+      const soft = skeletonSoftFill(t);
       const sweep = `background-image:linear-gradient(90deg,transparent 0%,${t.spinner_track} 50%,transparent 100%);background-size:60vw 100%;background-repeat:no-repeat;background-attachment:fixed;animation:onelo-shimmer 2.4s linear infinite`;
       return [
         "@keyframes onelo-shimmer{0%{background-position:-60vw 0}100%{background-position:100vw 0}}",
-        `.sk{background-color:${t.card_bg};${sweep};border-radius:${t.field_radius}px}`,
+        `.sk{background-color:${soft};${sweep};border-radius:${t.field_radius}px}`,
         `.strong{background-color:${t.border};${sweep};border-radius:${t.field_radius}px}`
       ].join("\n");
     }
@@ -562,25 +567,27 @@ ${skeletonCss2(t)}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:${t.page_bg};font-family:${t.body_font};padding:40px 36px 32px;overflow:hidden}
+body{background:${t.page_bg};font-family:${t.body_font};padding:24px 24px 0;overflow:hidden}
 ${skeletonCss2(t)}
-.icon{width:64px;height:64px;border-radius:${t.card_radius}px;margin:0 auto 16px}
-.title{width:220px;height:22px;margin:0 auto 40px}
-.cards{display:flex;gap:12px;margin-bottom:32px}
-.card{flex:1;height:76px;border-radius:${t.card_radius}px}
-.label{width:60px;height:13px;margin-bottom:8px}
-.input{width:100%;height:44px;margin-bottom:24px}
-.textarea{width:100%;height:110px;margin-bottom:32px}
+.icon{width:64px;height:64px;border-radius:${t.card_radius}px;margin:0 auto 14px}
+.col{width:100%;max-width:360px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.title{width:220px;height:22px;margin:0 auto 4px}
+.cards{display:flex;gap:8px}
+.card{flex:1;height:56px;border-radius:${t.card_radius}px}
+.field{display:flex;flex-direction:column;gap:6px}
+.label{width:60px;height:13px}
+.input{width:100%;height:44px}
+.textarea{width:100%;height:100px}
 .btn{width:100%;height:48px;border-radius:${t.button_radius}px}
 </style></head><body>
 <div class="sk icon"></div>
+<div class="col">
 <div class="sk title"></div>
 <div class="cards"><div class="sk card"></div><div class="sk card"></div><div class="sk card"></div></div>
-<div class="sk label"></div>
-<div class="strong input"></div>
-<div class="sk label"></div>
-<div class="strong textarea"></div>
+<div class="field"><div class="sk label"></div><div class="strong input"></div></div>
+<div class="field"><div class="sk label"></div><div class="strong textarea"></div></div>
 <div class="strong btn"></div>
+</div>
 </body></html>`;
     }
   }
@@ -1110,7 +1117,11 @@ function installFailsafeClose(btn, graceMs = 3500) {
 // src/auth/auth-modal.ts
 var import_core5 = __toESM(require_dist());
 var AUTH_COLUMN_WIDTH_PX = 300;
-function authSkeletonHtml(t) {
+var MINIMAL_AUTH_SKELETON_SHAPE = Object.freeze({ socialCount: 0, magicLink: false });
+function authSkeletonHtml(t, shape = MINIMAL_AUTH_SKELETON_SHAPE) {
+  const n = Math.max(0, Math.min(4, Math.floor(shape.socialCount || 0)));
+  const social = n > 0 ? `<div class="social">${'<div class="strong pill"></div>'.repeat(n)}<div class="divider"><span class="dline"></span><span class="sk dtext"></span><span class="dline"></span></div></div>` : "";
+  const magic = shape.magicLink ? '<div class="sk magic"></div>' : "";
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -1138,17 +1149,23 @@ ${(0, import_core5.skeletonCss)(t)}
 .cta{height:48px;margin-top:6px;border-radius:${t.button_radius}px}
 .row{display:flex;justify-content:space-between;align-items:center}
 .link{width:200px;height:12px;opacity:0.6;margin-top:6px;align-self:center}
+.social{width:100%;max-width:${AUTH_COLUMN_WIDTH_PX}px;display:flex;flex-direction:column;gap:8px;margin-bottom:20px}
+.pill{height:44px;border-radius:${t.button_radius}px}
+.divider{display:flex;align-items:center;gap:10px;margin:4px 0}
+.dline{flex:1;height:1px;background:${t.border}}
+.dtext{width:14px;height:11px;opacity:0.5}
+.magic{width:190px;height:12px;opacity:0.6;align-self:center}
 </style></head><body>
 <div class="wrap">
 <div class="sk logo"></div>
 <div class="sk head"></div>
 <div class="sk sub"></div>
-<div class="col">
+${social}<div class="col">
 <div class="sk lbl"></div>
 <div class="strong input" style="margin-bottom:2px"></div>
 <div class="row"><div class="sk lbl2"></div><div class="sk forgot"></div></div>
 <div class="strong input"></div>
-<div class="strong cta"></div>
+${magic}<div class="strong cta"></div>
 <div class="sk link"></div>
 </div>
 </div>
@@ -1159,8 +1176,11 @@ function isExpiredAuthError(err) {
 }
 var _AuthModal = class _AuthModal {
   /** @param brand The SDK's brand-token model (#681); neutral until config. */
-  constructor(brand = new import_core5.BrandSource()) {
+  /** @param shape #948: the sign-in methods the hosted form will draw, read
+   *  when the window opens (config may arrive after construction). */
+  constructor(brand = new import_core5.BrandSource(), shape = () => MINIMAL_AUTH_SKELETON_SHAPE) {
     this.brand = brand;
+    this.shape = shape;
     this.overlay = null;
     this.container = null;
     this.popup = null;
@@ -1345,7 +1365,7 @@ var _AuthModal = class _AuthModal {
     const skeleton = document.createElement("iframe");
     skeleton.setAttribute("aria-hidden", "true");
     skeleton.setAttribute("sandbox", "");
-    skeleton.srcdoc = authSkeletonHtml(t);
+    skeleton.srcdoc = authSkeletonHtml(t, this.shape());
     skeleton.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none;";
     this.skeleton = skeleton;
     const iframe = document.createElement("iframe");
@@ -1391,7 +1411,7 @@ var AuthModal = _AuthModal;
 var import_core6 = __toESM(require_dist());
 
 // package.json
-var version = "0.80.0";
+var version = "0.82.0";
 
 // src/core/sdk-headers.ts
 var SDK_NAME = "onelo-js";
@@ -1576,6 +1596,14 @@ var _OneloAuth = class _OneloAuth {
   setPlanChangeHandler(fn) {
     this.onPlanChange = fn;
   }
+  /** #948: the hosted form's sign-in methods for the loading skeleton. Before
+   *  config (or on an older backend) the minimal shape: never a pill the page
+   *  will not draw. */
+  authSkeletonShape() {
+    const c = this.resolvedConfig;
+    if (!c) return MINIMAL_AUTH_SKELETON_SHAPE;
+    return { socialCount: c.oauthProviders?.length ?? 0, magicLink: c.magicLinkEnabled === true };
+  }
   async initialize() {
     if (typeof window !== "undefined") {
       try {
@@ -1618,7 +1646,10 @@ var _OneloAuth = class _OneloAuth {
         // Branding page background — the token's page_bg (#681).
         pageBackgroundColor: brandTokens.page_bg,
         brandTokens,
-        signupMarketingConsent: (0, import_core12.signupMarketingConsentFromConfig)(j)
+        signupMarketingConsent: (0, import_core12.signupMarketingConsentFromConfig)(j),
+        // #948: the sign-in skeleton draws the hosted form's shape from these.
+        oauthProviders: Array.isArray(j["oauth_providers"]) ? j["oauth_providers"] : [],
+        magicLinkEnabled: j["magic_link_enabled"] === true
       };
       this.allowCustomBranding = this.resolvedConfig.allowCustomBranding;
       if (this.resolvedConfig.appName) this.appName = this.resolvedConfig.appName;
@@ -1685,7 +1716,7 @@ var _OneloAuth = class _OneloAuth {
       return await this.getSession() ?? existing;
     }
     if (this.pkceVerifier) await this.persistMagicLinkVerifier(this.pkceVerifier);
-    const modal = new AuthModal(this.brand);
+    const modal = new AuthModal(this.brand, () => this.authSkeletonShape());
     const result = await modal.open(this.withReturnTo(decision.url), mode, {
       watchCrossTabSession: true,
       renewPortal: this.renewPortal ?? void 0
@@ -4865,8 +4896,96 @@ var OneloConsent = class {
   }
 };
 
-// src/core/event-stream.ts
+// src/affiliates/affiliates.ts
 var import_core20 = __toESM(require_dist());
+var AFFILIATE_STORAGE_KEY = "onelo_aff";
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var CODE = /^[A-Za-z0-9]{6,32}$/;
+function storage2() {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+function read() {
+  try {
+    const raw = storage2()?.getItem(AFFILIATE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && UUID.test(parsed.click_id) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function write(kept) {
+  try {
+    storage2()?.setItem(AFFILIATE_STORAGE_KEY, JSON.stringify(kept));
+  } catch {
+  }
+}
+var OneloAffiliates = class {
+  constructor(apiUrl, publishableKey, getSession) {
+    this.apiUrl = apiUrl;
+    this.publishableKey = publishableKey;
+    this.getSession = getSession;
+  }
+  /** The referral in the current address, if any. */
+  fromLocation() {
+    if (typeof window === "undefined") return { code: null, clickId: null };
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("ref");
+    const clickId = params.get("onelo_click");
+    return {
+      code: code && CODE.test(code) ? code.toLowerCase() : null,
+      clickId: clickId && UUID.test(clickId) ? clickId : null
+    };
+  }
+  /**
+   * Capture the referral after the visitor's cookie answer. Stores nothing
+   * without consent. Answers whether a referral is now kept on this device.
+   */
+  async capture({ consent }) {
+    const { code, clickId } = this.fromLocation();
+    const base = this.apiUrl.replace(/\/$/, "");
+    if (!consent) {
+      if (code) {
+        await (0, import_core20.httpPost)(`${base}/v1/sdk/affiliates/refused`, { publishableKey: this.publishableKey, code }).catch(() => void 0);
+      }
+      return { kept: false };
+    }
+    const existing = read();
+    if (code) {
+      const res = await (0, import_core20.httpPost)(`${base}/v1/sdk/affiliates/click`, {
+        publishableKey: this.publishableKey,
+        code,
+        source: "sdk",
+        ...existing ? { existing: existing.click_id } : {}
+      }).catch(() => null);
+      const id = res?.json?.click_id;
+      if (res && res.status === 200 && id && UUID.test(id) && id !== existing?.click_id) write({ click_id: id });
+    } else if (clickId && clickId !== existing?.click_id) {
+      write({ click_id: clickId });
+    }
+    await this.claimForSession();
+    return { kept: read() !== null };
+  }
+  /** Tie the kept click to the signed-in user once. Called on every sign-in. */
+  async claimForSession() {
+    const kept = read();
+    if (!kept) return;
+    const session = await this.getSession().catch(() => null);
+    if (!session?.accessToken || kept.claimed_for === session.user.id) return;
+    const res = await (0, import_core20.httpPost)(`${this.apiUrl.replace(/\/$/, "")}/v1/sdk/affiliates/claim`, {
+      publishableKey: this.publishableKey,
+      userToken: session.accessToken,
+      clickId: kept.click_id
+    }).catch(() => null);
+    if (res && res.status === 200) write({ ...kept, claimed_for: session.user.id });
+  }
+};
+
+// src/core/event-stream.ts
+var import_core21 = __toESM(require_dist());
 var RECONNECT_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 3e4];
 var MINT_TIMEOUT_MS = 15e3;
 var StreamCredentialRefused = class extends Error {
@@ -5090,7 +5209,7 @@ var OneloEventStream = class {
         this.userToken,
         (attempt) => {
           anonymous = attempt.anonymous;
-          return (0, import_core20.httpPost)(
+          return (0, import_core21.httpPost)(
             `${this.apiUrl}/api/sdk/features/stream-token`,
             {},
             { "X-Publishable-Key": this.publishableKey, ...bearerHeader(attempt.token) },
@@ -5276,7 +5395,7 @@ var PlanChangeRefresher = class {
 };
 
 // src/onelo.ts
-var import_core21 = __toESM(require_dist());
+var import_core22 = __toESM(require_dist());
 var Onelo = class {
   constructor(config) {
     this.authUnsubscribe = null;
@@ -5285,7 +5404,7 @@ var Onelo = class {
       refresh: () => this.auth.refreshSession().then((s) => s?.accessToken ?? null)
     };
     this.eventStream = new OneloEventStream(config.apiUrl, config.publishableKey, version, userToken);
-    const brand = new import_core21.BrandSource();
+    const brand = new import_core22.BrandSource();
     this.auth = new OneloAuth(config, brand);
     this.auth.attachEventStream(this.eventStream);
     this.paywall = new OneloPaywall(
@@ -5347,6 +5466,7 @@ var Onelo = class {
     const autoPresentConsent = config.autoPresentConsentGate ?? true;
     this.consent = new OneloConsent(config.apiUrl, config.publishableKey, this.auth, autoPresentConsent);
     this.consent.attachEventStream(this.eventStream);
+    this.affiliates = new OneloAffiliates(config.apiUrl, config.publishableKey, () => this.auth.getSession());
     let boundUserId = null;
     this.authUnsubscribe = this.auth.onAuthStateChange((session) => {
       const userId = session?.user.id ?? null;
@@ -5355,6 +5475,7 @@ var Onelo = class {
       this.monitor.setUserId(session?.user.id ?? null);
       void this.features.load(session?.user.id ?? null);
       if (session?.user.id && autoPresentConsent) void this.consent.presentGateIfNeeded();
+      if (session?.user.id) void this.affiliates.claimForSession();
     });
     void this.auth.getSession().then((session) => {
       if (!session) void this.features.load(null);
@@ -5424,11 +5545,13 @@ var Onelo = class {
 };
 
 // src/index.ts
-var import_core22 = __toESM(require_dist());
-var export_OneloError = import_core22.OneloError;
+var import_core23 = __toESM(require_dist());
+var export_OneloError = import_core23.OneloError;
 export {
+  AFFILIATE_STORAGE_KEY,
   FeatureState,
   Onelo,
+  OneloAffiliates,
   OneloConsent,
   OneloCustomerPortal,
   export_OneloError as OneloError,

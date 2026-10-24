@@ -7,6 +7,7 @@ import { OneloForms } from './forms/forms'
 import { OneloWaitlist } from './waitlist/waitlist'
 import { OneloCustomerPortal } from './customer-portal/customer-portal'
 import { OneloConsent } from './consent/consent'
+import { OneloAffiliates } from './affiliates/affiliates'
 import { OneloEventStream } from './core/event-stream'
 import { PlanChangeRefresher, type PlanChange } from './core/plan-change'
 import { resetUserTokenRefusal, type UserTokenSource } from './core/user-token'
@@ -24,6 +25,8 @@ export class Onelo {
   readonly customerPortal: OneloCustomerPortal
   /** Legal-consent gate (Terms/Privacy updates for signed-in users). */
   readonly consent: OneloConsent
+  /** Affiliate referral capture (#929): call `affiliates.capture({ consent })`. */
+  readonly affiliates: OneloAffiliates
   private authUnsubscribe: (() => void) | null = null
   // ONE multiplexed SSE connection per app, shared by features + auth. Owned
   // here (composition root); consumers only register handlers/params on it.
@@ -122,6 +125,7 @@ export class Onelo {
     const autoPresentConsent = config.autoPresentConsentGate ?? true
     this.consent = new OneloConsent(config.apiUrl, config.publishableKey, this.auth, autoPresentConsent)
     this.consent.attachEventStream(this.eventStream)
+    this.affiliates = new OneloAffiliates(config.apiUrl, config.publishableKey, () => this.auth.getSession())
 
     // Auth → features identity bridge: reload features when session changes.
     // Also re-check consent on sign-in (a blocking legal version may have taken
@@ -137,6 +141,8 @@ export class Onelo {
       this.monitor.setUserId(session?.user.id ?? null)
       void this.features.load(session?.user.id ?? null)
       if (session?.user.id && autoPresentConsent) void this.consent.presentGateIfNeeded()
+      // #929: a referral kept on this device is tied to the user who signs in.
+      if (session?.user.id) void this.affiliates.claimForSession()
     })
 
     // Let auth restore the persisted session before the first Features load.

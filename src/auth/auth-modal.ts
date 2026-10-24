@@ -55,8 +55,29 @@ export type AuthPresentMode = 'popup' | 'embedded'
  */
 const AUTH_COLUMN_WIDTH_PX = 300
 
-/** #681: painted from the app's brand tokens (page, card/border, radii). */
-export function authSkeletonHtml(t: BrandTokens): string {
+/** #948: which sign-in methods the hosted form will draw, as far as the SDK
+ *  knows before the window opens (from /api/sdk/config). Unknown reads as the
+ *  smallest shape — no pills, no magic link — so the skeleton never flashes a
+ *  button the hosted page does not show. */
+export interface AuthSkeletonShape {
+  /** Enabled OAuth providers (one secondary pill each, then an "or" divider). */
+  socialCount: number
+  /** Passwordless sign-in on: a centred link row under the password field. */
+  magicLink: boolean
+}
+
+export const MINIMAL_AUTH_SKELETON_SHAPE: Readonly<AuthSkeletonShape> = Object.freeze({ socialCount: 0, magicLink: false })
+
+/** #681: painted from the app's brand tokens (page, card/border, radii).
+ *  #948: shaped like the hosted form for `shape` — OAuthButtons.tsx (pills
+ *  gap 8, block margin-bottom 20, divider margin 4px 0) above the email column,
+ *  and HostedAuthForm's magic-link button between the password and the CTA. */
+export function authSkeletonHtml(t: BrandTokens, shape: AuthSkeletonShape = MINIMAL_AUTH_SKELETON_SHAPE): string {
+  const n = Math.max(0, Math.min(4, Math.floor(shape.socialCount || 0)))
+  const social = n > 0
+    ? `<div class="social">${'<div class="strong pill"></div>'.repeat(n)}<div class="divider"><span class="dline"></span><span class="sk dtext"></span><span class="dline"></span></div></div>`
+    : ''
+  const magic = shape.magicLink ? '<div class="sk magic"></div>' : ''
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -84,17 +105,23 @@ ${skeletonCss(t)}
 .cta{height:48px;margin-top:6px;border-radius:${t.button_radius}px}
 .row{display:flex;justify-content:space-between;align-items:center}
 .link{width:200px;height:12px;opacity:0.6;margin-top:6px;align-self:center}
+.social{width:100%;max-width:${AUTH_COLUMN_WIDTH_PX}px;display:flex;flex-direction:column;gap:8px;margin-bottom:20px}
+.pill{height:44px;border-radius:${t.button_radius}px}
+.divider{display:flex;align-items:center;gap:10px;margin:4px 0}
+.dline{flex:1;height:1px;background:${t.border}}
+.dtext{width:14px;height:11px;opacity:0.5}
+.magic{width:190px;height:12px;opacity:0.6;align-self:center}
 </style></head><body>
 <div class="wrap">
 <div class="sk logo"></div>
 <div class="sk head"></div>
 <div class="sk sub"></div>
-<div class="col">
+${social}<div class="col">
 <div class="sk lbl"></div>
 <div class="strong input" style="margin-bottom:2px"></div>
 <div class="row"><div class="sk lbl2"></div><div class="sk forgot"></div></div>
 <div class="strong input"></div>
-<div class="strong cta"></div>
+${magic}<div class="strong cta"></div>
 <div class="sk link"></div>
 </div>
 </div>
@@ -133,7 +160,12 @@ export type AuthModalCallback =
 
 export class AuthModal {
   /** @param brand The SDK's brand-token model (#681); neutral until config. */
-  constructor(private readonly brand: BrandSource = new BrandSource()) {}
+  /** @param shape #948: the sign-in methods the hosted form will draw, read
+   *  when the window opens (config may arrive after construction). */
+  constructor(
+    private readonly brand: BrandSource = new BrandSource(),
+    private readonly shape: () => AuthSkeletonShape = () => MINIMAL_AUTH_SKELETON_SHAPE,
+  ) {}
 
   private overlay: HTMLDivElement | null = null
   private container: HTMLDivElement | null = null
@@ -423,7 +455,7 @@ export class AuthModal {
     const skeleton = document.createElement('iframe')
     skeleton.setAttribute('aria-hidden', 'true')
     skeleton.setAttribute('sandbox', '')
-    skeleton.srcdoc = authSkeletonHtml(t)
+    skeleton.srcdoc = authSkeletonHtml(t, this.shape())
     skeleton.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none;'
     this.skeleton = skeleton
 

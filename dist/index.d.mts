@@ -295,6 +295,16 @@ interface ResendVerificationResult {
 }
 
 type AuthPresentMode = 'popup' | 'embedded';
+/** #948: which sign-in methods the hosted form will draw, as far as the SDK
+ *  knows before the window opens (from /api/sdk/config). Unknown reads as the
+ *  smallest shape — no pills, no magic link — so the skeleton never flashes a
+ *  button the hosted page does not show. */
+interface AuthSkeletonShape {
+    /** Enabled OAuth providers (one secondary pill each, then an "or" divider). */
+    socialCount: number;
+    /** Passwordless sign-in on: a centred link row under the password field. */
+    magicLink: boolean;
+}
 
 /**
  * Proof of the signed-in end user on Features calls (#510, #518).
@@ -611,6 +621,10 @@ declare class OneloAuth {
     /** The SDK's one brand-token model (#681), shared with every modal. `Onelo`
      *  passes its own; a standalone OneloAuth keeps a private one. */
     readonly brand: BrandSource;
+    /** #948: the hosted form's sign-in methods for the loading skeleton. Before
+     *  config (or on an older backend) the minimal shape: never a pill the page
+     *  will not draw. */
+    authSkeletonShape(): AuthSkeletonShape;
     constructor(config: OneloConfig, brand?: BrandSource);
     private initialize;
     whenReady(): Promise<void>;
@@ -1538,6 +1552,48 @@ declare class OneloConsent {
     dispose(): void;
 }
 
+/**
+ * Affiliate referral capture for apps with the Onelo SDK (#929).
+ *
+ * The app captures the referral itself: no paste-in script is needed. A visitor
+ * arrives with `?ref=<code>` (an Affiliate linking straight to the app) or
+ * `?onelo_click=<id>` (forwarded by Onelo's tracked link after consent there).
+ *
+ * Consent comes first. Call `capture({ consent })` once the visitor answered
+ * your cookie question:
+ *   - `consent: false` stores nothing on the device; a `?ref=` only adds one
+ *     to the Affiliate's anonymous total.
+ *   - `consent: true` keeps the click in localStorage (`onelo_aff`). Which of
+ *     two clicks stays is the program's winner rule, decided by Onelo.
+ * When a user is signed in (now or later), the kept click is tied to them, so
+ * any purchase they make is attributed, whichever checkout opens.
+ */
+declare const AFFILIATE_STORAGE_KEY = "onelo_aff";
+declare class OneloAffiliates {
+    private readonly apiUrl;
+    private readonly publishableKey;
+    private readonly getSession;
+    constructor(apiUrl: string, publishableKey: string, getSession: () => Promise<{
+        accessToken: string;
+        user: {
+            id: string;
+        };
+    } | null>);
+    /** The referral in the current address, if any. */
+    private fromLocation;
+    /**
+     * Capture the referral after the visitor's cookie answer. Stores nothing
+     * without consent. Answers whether a referral is now kept on this device.
+     */
+    capture({ consent }: {
+        consent: boolean;
+    }): Promise<{
+        kept: boolean;
+    }>;
+    /** Tie the kept click to the signed-in user once. Called on every sign-in. */
+    claimForSession(): Promise<void>;
+}
+
 declare class Onelo {
     readonly auth: OneloAuth;
     readonly features: OneloFeatures;
@@ -1549,6 +1605,8 @@ declare class Onelo {
     readonly customerPortal: OneloCustomerPortal;
     /** Legal-consent gate (Terms/Privacy updates for signed-in users). */
     readonly consent: OneloConsent;
+    /** Affiliate referral capture (#929): call `affiliates.capture({ consent })`. */
+    readonly affiliates: OneloAffiliates;
     private authUnsubscribe;
     private readonly eventStream;
     private readonly planChange;
@@ -1593,4 +1651,4 @@ declare class Onelo {
     destroy(): void;
 }
 
-export { type AuthPresentMode, type BrandTokens, type ExternalTokenGetter, type FeatureReason, FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, type OneloConfig, OneloConsent, type OneloConsentEnforcement, type OneloConsentRequirement, OneloCustomerPortal, type OneloEntitlement, OneloError, OneloFeatures, OneloFeaturesError, type OneloFeaturesErrorCode, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, type OneloSession, type OneloUser, OneloWaitlist, type SignUpOptions, type SignupMarketingConsent, type UpgradeHint, type WaitlistConsent, type WaitlistJoinOptions };
+export { AFFILIATE_STORAGE_KEY, type AuthPresentMode, type BrandTokens, type ExternalTokenGetter, type FeatureReason, FeatureState, type FeatureStatus, type FeedbackOptions, type MonitorContext, type MonitorEventOptions, Onelo, OneloAffiliates, type OneloConfig, OneloConsent, type OneloConsentEnforcement, type OneloConsentRequirement, OneloCustomerPortal, type OneloEntitlement, OneloError, OneloFeatures, OneloFeaturesError, type OneloFeaturesErrorCode, OneloFeedback, OneloForms, OneloMonitor, OneloPaywall, type OneloSession, type OneloUser, OneloWaitlist, type SignUpOptions, type SignupMarketingConsent, type UpgradeHint, type WaitlistConsent, type WaitlistJoinOptions };
