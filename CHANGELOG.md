@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.82.0] — 2026-10-24
+## [0.82.1] — 2026-11-07
+
+### Fixed
+
+- `openManage()`: Change plan on the manage page now opens the hosted store (the Customer Portal's plan switch, #988). The modal closes when the store finishes a switch or a purchase and the plan is refreshed at once; when the store's link expires it re-enters the plan picker through the Customer Portal instead of showing "link expired". After a store switch `openManage()` resolves `null`; read the new plan from the refreshed features / entitlement.
+
+## [0.82.0-staging] — 2026-10-24
 
 ### Added
 

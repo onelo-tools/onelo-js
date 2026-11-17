@@ -1359,7 +1359,10 @@ declare class OneloPaywall {
     private _completeHostedCheckout;
     /**
      * Opens the hosted manage page (upgrade, cancel, payment method).
-     * Returns the new plan string if the user changed their plan, or null if closed without changes.
+     * Resolves with the new plan key when the page reports one, otherwise null
+     * when it closes. A plan changed through the store the page opens (#988) is
+     * reconciled at once through the SDK's plan refresh (features and
+     * entitlement) and resolves null — read the plan from there.
      */
     openManage(lang?: string): Promise<string | null>;
     private initiateManage;

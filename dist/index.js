@@ -1437,7 +1437,7 @@ var AuthModal = _AuthModal;
 var import_core6 = __toESM(require_dist());
 
 // package.json
-var version = "0.82.0";
+var version = "0.82.1";
 
 // src/core/sdk-headers.ts
 var SDK_NAME = "onelo-js";
@@ -4170,7 +4170,10 @@ var OneloPaywall = class {
   }
   /**
    * Opens the hosted manage page (upgrade, cancel, payment method).
-   * Returns the new plan string if the user changed their plan, or null if closed without changes.
+   * Resolves with the new plan key when the page reports one, otherwise null
+   * when it closes. A plan changed through the store the page opens (#988) is
+   * reconciled at once through the SDK's plan refresh (features and
+   * entitlement) and resolves null — read the plan from there.
    */
   async openManage(lang) {
     const manageUrl = await this.initiateManage(lang);
@@ -4248,13 +4251,30 @@ var OneloPaywall = class {
           });
           return;
         }
+        if (data?.type === "onelo:renew_request" && data.kind === "portal" && typeof data.request_id === "string") {
+          if (e.source !== iframe.contentWindow) return;
+          const requestId = data.request_id;
+          const renew = this.renewPortal;
+          const reply = renew ? renew(requestId) : Promise.resolve({ type: "onelo:renew_failed", request_id: requestId, reason: "renew_failed" });
+          void reply.then((r) => {
+            try {
+              iframe.contentWindow?.postMessage(r, allowedOrigin);
+            } catch {
+            }
+          });
+          return;
+        }
         if (data?.type === "onelo:plan_changed" && typeof data.plan === "string") {
           close();
           resolve(data.plan);
-        } else if (data?.type === "onelo:cancel" || data?.type === "onelo:error") {
-          close();
-          resolve(null);
+          return;
         }
+        const hb = classifyHandBack(data);
+        if (!hb) return;
+        close();
+        if (hb.kind === "switched") this.onPlanChange?.({ kind: "switched", reason: hb.reason });
+        else if (hb.kind === "purchase") this.onPlanChange?.({ kind: "purchase" });
+        resolve(null);
       };
       window.addEventListener("message", messageHandler);
       cancelBtn.addEventListener("click", () => {

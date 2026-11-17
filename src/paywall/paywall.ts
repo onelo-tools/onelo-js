@@ -1,6 +1,7 @@
 import { httpGet, httpPost, mapSession, OneloSession, OneloError, extractErrorCode, BrandSource } from '@onelo/core'
 import { AuthModal, isExpiredAuthError, type AuthPresentMode } from '../auth/auth-modal'
 import type { PlanChange } from '../core/plan-change'
+import { classifyHandBack } from '../core/hand-back'
 
 /** `_completeHostedCheckout` outcome: the store's link died, open a fresh one (#619). */
 const RESTART = Symbol('restart')
@@ -168,7 +169,10 @@ export class OneloPaywall {
 
   /**
    * Opens the hosted manage page (upgrade, cancel, payment method).
-   * Returns the new plan string if the user changed their plan, or null if closed without changes.
+   * Resolves with the new plan key when the page reports one, otherwise null
+   * when it closes. A plan changed through the store the page opens (#988) is
+   * reconciled at once through the SDK's plan refresh (features and
+   * entitlement) and resolves null — read the plan from there.
    */
   async openManage(lang?: string): Promise<string | null> {
     const manageUrl = await this.initiateManage(lang)
@@ -266,13 +270,43 @@ export class OneloPaywall {
           })
           return
         }
+        // #988: Change plan on the manage page navigates this iframe to the
+        // hosted store (the Customer Portal's switch). When that store's token
+        // dies it asks for a fresh PORTAL (the switch is marked as opened from
+        // the portal) — answer with the customer portal's renewer, at the
+        // hosted origin, to this iframe only; the store then re-enters the
+        // plan picker in the portal instead of showing "link expired".
+        if (data?.type === 'onelo:renew_request' && data.kind === 'portal' && typeof data.request_id === 'string') {
+          if (e.source !== iframe.contentWindow) return
+          const requestId = data.request_id
+          const renew = this.renewPortal
+          const reply: Promise<Record<string, unknown>> = renew
+            ? renew(requestId)
+            : Promise.resolve({ type: 'onelo:renew_failed', request_id: requestId, reason: 'renew_failed' })
+          void reply.then((r) => {
+            try { iframe.contentWindow?.postMessage(r, allowedOrigin) } catch { /* modal closed */ }
+          })
+          return
+        }
+        // A manage page that names the new plan itself (pre-#988 page).
         if (data?.type === 'onelo:plan_changed' && typeof data.plan === 'string') {
           close()
           resolve(data.plan)
-        } else if (data?.type === 'onelo:cancel' || data?.type === 'onelo:error') {
-          close()
-          resolve(null)
+          return
         }
+        // #988: the store's own finish (Store Hand-back, #615) — a plan switch
+        // (`onelo:done`) or a purchase (`onelo:code`). The buyer is already
+        // signed in, so nothing is exchanged: the modal closes and the plan is
+        // reconciled at once through the plan-change refresher, as the
+        // Customer Portal does (#659). The store does not name the new plan,
+        // so openManage() resolves null here; read the plan from the
+        // refreshed features / entitlement.
+        const hb = classifyHandBack(data)
+        if (!hb) return
+        close()
+        if (hb.kind === 'switched') this.onPlanChange?.({ kind: 'switched', reason: hb.reason })
+        else if (hb.kind === 'purchase') this.onPlanChange?.({ kind: 'purchase' })
+        resolve(null)
       }
 
       window.addEventListener('message', messageHandler)

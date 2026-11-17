@@ -96,3 +96,64 @@ describe('the open manage modal answers its iframe', () => {
     expect(document.querySelector('iframe[src]')).toBeNull()
   })
 })
+
+describe('#988: the store opened from the manage page', () => {
+  async function openModal(renewPortal: ((id: string) => Promise<Record<string, unknown>>) | null = null) {
+    httpGet.mockResolvedValueOnce({ status: 200, json: { manage_url: HOSTED } })
+    const p = paywall()
+    const changes: unknown[] = []
+    p.setPlanChangeHandler((c) => changes.push(c))
+    p.setPortalRenewer(renewPortal)
+    const result = p.openManage('pl')
+    await vi.waitFor(() => expect(document.querySelector('iframe[src]')).not.toBeNull())
+    const iframe = document.querySelector('iframe[src]') as HTMLIFrameElement
+    const post = vi.fn()
+    Object.defineProperty(iframe, 'contentWindow', { configurable: true, value: { postMessage: post } })
+    return { iframe, post, result, changes }
+  }
+
+  it('a finished switch (onelo:done) closes the modal and refreshes the plan', async () => {
+    const { result, changes } = await openModal()
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'onelo:done', reason: 'plan_switched' }, origin: 'https://onelo.test',
+    }))
+    await expect(result).resolves.toBeNull()
+    expect(changes).toEqual([{ kind: 'switched', reason: 'plan_switched' }])
+    expect(document.querySelector('iframe[src]')).toBeNull()
+  })
+
+  it('a purchase (onelo:code) closes the modal and refreshes the plan', async () => {
+    const { result, changes } = await openModal()
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'onelo:code', code: 'c1' }, origin: 'https://onelo.test',
+    }))
+    await expect(result).resolves.toBeNull()
+    expect(changes).toEqual([{ kind: 'purchase' }])
+  })
+
+  it('answers the store\'s PORTAL renewal through the portal renewer, to its iframe only', async () => {
+    const renew = vi.fn(async (id: string) => ({ type: 'onelo:renewed', request_id: id, hosted_url: 'https://onelo.test/customer/portal?token=prt_x' }))
+    const { iframe, post } = await openModal(renew)
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'onelo:renew_request', kind: 'portal', request_id: 'p1' },
+      origin: 'https://onelo.test', source: iframe.contentWindow as Window,
+    }))
+    await vi.waitFor(() => expect(post).toHaveBeenCalled())
+    expect(renew).toHaveBeenCalledWith('p1')
+    expect(post).toHaveBeenCalledWith(
+      { type: 'onelo:renewed', request_id: 'p1', hosted_url: 'https://onelo.test/customer/portal?token=prt_x' },
+      'https://onelo.test',
+    )
+    expect(document.querySelector('iframe[src]')).not.toBeNull()
+  })
+
+  it('no portal renewer → renew_failed, so the store shows its own expiry screen', async () => {
+    const { iframe, post } = await openModal(null)
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'onelo:renew_request', kind: 'portal', request_id: 'p2' },
+      origin: 'https://onelo.test', source: iframe.contentWindow as Window,
+    }))
+    await vi.waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith({ type: 'onelo:renew_failed', request_id: 'p2', reason: 'renew_failed' }, 'https://onelo.test')
+  })
+})
