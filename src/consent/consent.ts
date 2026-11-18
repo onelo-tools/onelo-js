@@ -1,7 +1,8 @@
-import { httpGet, httpPost, OneloError, statusColor, type BrandTokens } from '@onelo/core'
+import { httpGet, httpPost, OneloError, requestLanguage, statusColor, textsLanguage, type BrandTokens } from '@onelo/core'
 import type { OneloAuth } from '../auth/auth'
 import type { OneloEventStream } from '../core/event-stream'
 import { isUserRevokedRefusal } from '../core/user-revoked'
+import { oneloText, type OneloTextKey } from '../core/texts'
 
 /**
  * Legal-consent gate for the Web SDK — parity with Swift's
@@ -76,16 +77,21 @@ export interface OneloConsentRequirement {
   consentUrl: string | null
 }
 
-const DOC_TITLES: Record<string, string> = {
-  terms: 'Terms of Service',
-  privacy: 'Privacy Policy',
-  dpa: 'Data Processing Agreement',
-  cookies: 'Cookies Policy',
+/** #1079: the document names in the Page Language — the legal notices' names
+ *  (account_notice_mail_text.py doc_*), so the gate, the hosted page and the
+ *  email name a document alike. */
+const DOC_TITLE_KEYS: Record<string, OneloTextKey> = {
+  terms: 'docTerms',
+  privacy: 'docPrivacy',
+  dpa: 'docDpa',
+  cookies: 'docCookies',
 }
 
 function titleFor(docType: string): string {
-  if (!docType) return 'Legal agreement' // never render a bare "— updated"
-  return DOC_TITLES[docType] ?? docType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  if (!docType) return oneloText('docGeneric') // never render a bare heading
+  const key = DOC_TITLE_KEYS[docType]
+  // A type Onelo has no name for is shown as the server named it.
+  return key ? oneloText(key) : docType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
 /** Map a backend `/required` row → requirement. Unknown enforcement → 'unknown';
@@ -136,11 +142,15 @@ export class OneloConsent {
   /** Tab-trap keydown handler, removed on close. */
   private _trapHandler: ((e: KeyboardEvent) => void) | null = null
 
-  constructor(apiUrl: string, publishableKey: string, auth: OneloAuth, autoPresent = true) {
+  /** #1079: the App's language (`OneloConfig.language`), the default `lang`. */
+  private readonly appLanguage: string | undefined
+
+  constructor(apiUrl: string, publishableKey: string, auth: OneloAuth, autoPresent = true, appLanguage?: string) {
     this.apiUrl = apiUrl
     this.publishableKey = publishableKey
     this.auth = auth
     this.autoPresent = autoPresent
+    this.appLanguage = appLanguage
   }
 
   // ── Observable revision (mirrors Swift @Published consentRevision) ──────────
@@ -169,7 +179,10 @@ export class OneloConsent {
     const session = await this.auth.getSession()
     if (!session) return []
     try {
-      const { status, json } = await httpGet(`${this.apiUrl}/v1/sdk/consent/required`, {
+      // #1073: the App's language, else the browser's; the backend picks the
+      // Page Language (within the App Languages) and links each document in it.
+      const url = `${this.apiUrl}/v1/sdk/consent/required?lang=${encodeURIComponent(requestLanguage(undefined, this.appLanguage))}`
+      const { status, json } = await httpGet(url, {
         Authorization: `Bearer ${session.accessToken}`,
         'X-Publishable-Key': this.publishableKey,
         'X-Onelo-Sdk-Platform': SDK_PLATFORM,
@@ -318,7 +331,7 @@ export class OneloConsent {
       els.accept.disabled = true
       els.decline.disabled = true
       els.error.style.display = 'none'
-      els.accept.textContent = 'Saving…'
+      els.accept.textContent = oneloText('saving')
       try {
         await this.acceptConsent(requirement.versionId)
       } catch {
@@ -326,8 +339,8 @@ export class OneloConsent {
         // bypassable just because one request failed).
         els.accept.disabled = false
         els.decline.disabled = false
-        els.accept.textContent = 'Accept & Continue'
-        els.error.textContent = 'Could not save — check your connection and try again.'
+        els.accept.textContent = oneloText('acceptAndContinue')
+        els.error.textContent = oneloText('consentSaveFailed')
         els.error.style.display = 'block'
         return
       }
@@ -348,6 +361,8 @@ export class OneloConsent {
     overlay.setAttribute('data-onelo-consent-gate', '')
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
+    // #1079: screen readers read the gate in the language it is written in.
+    overlay.setAttribute('lang', textsLanguage())
     const st = consentCardStyles(this.auth.brand.current())
     overlay.style.cssText = st.overlay
 
@@ -355,11 +370,12 @@ export class OneloConsent {
     card.style.cssText = st.card
 
     const h = document.createElement('h2')
-    h.textContent = `${docTitle} — updated`
+    // #1079: the hosted gate's words (page_frame_text.py), in the Page Language.
+    h.textContent = oneloText('consentHeading', { doc: docTitle })
     h.style.cssText = st.heading
 
     const p = document.createElement('p')
-    p.textContent = `Please review and accept our updated ${docTitle} to keep using the app.`
+    p.textContent = oneloText('consentBody')
     p.style.cssText = st.body
 
     card.appendChild(h)
@@ -372,7 +388,7 @@ export class OneloConsent {
       link.href = requirement.url
       link.target = '_blank'
       link.rel = 'noopener noreferrer'
-      link.textContent = `Review full ${docTitle} ↗`
+      link.textContent = oneloText('consentReview', { doc: docTitle })
       link.style.cssText = st.link
       card.appendChild(link)
     }
@@ -385,12 +401,12 @@ export class OneloConsent {
 
     const decline = document.createElement('button')
     decline.type = 'button'
-    decline.textContent = 'Sign out'
+    decline.textContent = oneloText('signOut')
     decline.style.cssText = st.decline
 
     const accept = document.createElement('button')
     accept.type = 'button'
-    accept.textContent = 'Accept & Continue'
+    accept.textContent = oneloText('acceptAndContinue')
     accept.style.cssText = st.accept
 
     const els = { accept, decline, error }

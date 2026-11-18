@@ -16,6 +16,12 @@ export class OneloFeedback {
     this.brand = brand
   }
 
+  /** #1079: the App's language (`OneloConfig.language`). Set by `Onelo`. */
+  private appLanguage: string | undefined
+  setAppLanguage(language: string | undefined): void {
+    this.appLanguage = language || undefined
+  }
+
   constructor(
     private readonly apiUrl: string,
     private readonly publishableKey: string,
@@ -60,7 +66,23 @@ export class OneloFeedback {
     if (status < 200 || status >= 300) throw new Error(`Feedback initiate failed: ${status}`)
     const hosted_url = (json as { hosted_url?: string } | null)?.hosted_url
     if (!hosted_url) throw new Error('Feedback initiate returned no hosted_url')
-    return hosted_url
+    return this.withAppLanguage(hosted_url)
+  }
+
+  /** #1079: the hosted form reads its Page Language from `?lang=` (the App's
+   *  language, kept only when it is one of the App Languages), else from the
+   *  browser's Accept-Language — which the iframe sends by itself. So the App's
+   *  language rides along only when the App set one. */
+  private withAppLanguage(hostedUrl: string): string {
+    if (!this.appLanguage) return hostedUrl
+    try {
+      const u = new URL(hostedUrl)
+      if (u.searchParams.has('lang')) return hostedUrl
+      u.searchParams.set('lang', this.appLanguage)
+      return u.toString()
+    } catch {
+      return hostedUrl
+    }
   }
 
   /**

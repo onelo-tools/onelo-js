@@ -54,7 +54,7 @@ describe('openUpgrade — no portal page in front of the store', () => {
 
     expect(httpGet).toHaveBeenCalledTimes(1)
     const [url, headers] = httpGet.mock.calls[0]
-    expect(url).toBe('https://api.test/api/sdk/paywall/upgrade-initiate?key=pk_test&callback_scheme=web')
+    expect(url).toBe(`https://api.test/api/sdk/paywall/upgrade-initiate?key=pk_test&callback_scheme=web&lang=${encodeURIComponent(navigator.language)}`)
     // `plan` is advisory on web: the buyer picks in the store (browse mode).
     expect(url).not.toContain('plan=')
     expect(headers.Authorization).toBe('Bearer user-jwt')

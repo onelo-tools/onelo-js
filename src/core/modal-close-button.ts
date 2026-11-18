@@ -10,12 +10,15 @@
  * `:hover` pseudo-class and these SDK modals inject no stylesheet.
  */
 import { NEUTRAL_BRAND_TOKENS, type BrandTokens } from '@onelo/core'
+import { oneloText } from './texts'
 
 export function createModalCloseButton(t: BrandTokens = NEUTRAL_BRAND_TOKENS): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.setAttribute('data-onelo-cancel', '')
-  btn.setAttribute('aria-label', 'Close')
-  btn.setAttribute('title', 'Close')
+  // #1079: the label is the App User's, in the Page Language.
+  const label = oneloText('close')
+  btn.setAttribute('aria-label', label)
+  btn.setAttribute('title', label)
   btn.textContent = '✕'
 
   // Chip painted from the app's brand tokens (#681): card surface, border

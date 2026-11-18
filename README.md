@@ -191,6 +191,10 @@ Top-level helpers on the instance:
 
 `identify()` and its `userIdHash` argument are deprecated: the signed-in Onelo user is used automatically, and Features calls prove that user with their access token.
 
+## Language
+
+The SDK's own texts (the close button, "Signing you in…", the consent gate, the feature badges such as "Coming soon" and "Available in Pro", and the error messages your App User may see) and the hosted pages it opens use the App User's Page Language. That is the language you pass with `new Onelo({ ..., language: 'de' })` when it is one of your App Languages, otherwise the browser language when it is one, otherwise your App's default. Onelo chooses it and translates its own texts into English, Polish, German, French, Spanish, Italian, Portuguese and Dutch. Your own content (app name, plan names, your texts) is shown as written. `onelo.auth.pageLanguage` tells you the language chosen. Branch on `OneloError.code`, never on its message: the message follows the language.
+
 ## React, Vue and other frameworks
 
 The SDK is framework-agnostic — there are no framework-specific builds or hooks. Reactivity goes through `features.subscribe()`, which returns an unsubscribe function:

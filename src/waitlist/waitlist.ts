@@ -1,20 +1,27 @@
-import { waitlistConsentField, type WaitlistJoinOptions } from '@onelo/core'
+import { waitlistConsentField, waitlistLanguageField, type WaitlistJoinOptions } from '@onelo/core'
 
 export class OneloWaitlist {
   constructor(
     private readonly apiUrl: string,
     private readonly publishableKey: string,
+    /** #1079: the App's language (`OneloConfig.language`), the join's default. */
+    private readonly appLanguage?: string,
   ) {}
 
   async join(
     slug: string | undefined,
     email: string,
-    /** #818: the checkboxes your form showed — `{ consent: { marketing, custom } }`. */
+    /** #818: the checkboxes your form showed — `{ consent: { marketing, custom } }`.
+     *  #1038: `language` — the App's language for this sign-up; omitted, the
+     *  device language is sent and the backend stores the join's Page Language. */
     options?: WaitlistJoinOptions,
   ): Promise<{ success: boolean; position?: number; alreadyJoined: boolean }> {
     try {
       const body: Record<string, unknown> = {
         publishableKey: this.publishableKey, email, ...waitlistConsentField(options),
+        ...waitlistLanguageField(
+          options?.language || !this.appLanguage ? options : { ...options, language: this.appLanguage },
+        ),
       }
       if (slug !== undefined) body.slug = slug
       const res = await fetch(`${this.apiUrl}/api/sdk/waitlist/join`, {

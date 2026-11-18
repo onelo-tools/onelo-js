@@ -11,8 +11,25 @@ import { OneloAffiliates } from './affiliates/affiliates'
 import { OneloEventStream } from './core/event-stream'
 import { PlanChangeRefresher, type PlanChange } from './core/plan-change'
 import { resetUserTokenRefusal, type UserTokenSource } from './core/user-token'
-import { OneloConfig, BrandSource } from '@onelo/core'
+import { BrandSource, type OneloConfig as CoreOneloConfig } from '@onelo/core'
 import { version as SDK_VERSION } from '../package.json'
+
+/** The Web SDK's configuration: the shared `@onelo/core` options plus this
+ *  SDK's own. */
+export interface OneloConfig extends CoreOneloConfig {
+  /**
+   * #1079 — the App's language for its App User (a BCP 47 tag such as `'de'`
+   * or `'pt-PT'`), e.g. the language your own UI is set to. Omitted, the
+   * browser language is used. Onelo picks the **Page Language** from it: this
+   * language when it is one of your App Languages, else the browser language
+   * when it is one, else your App's default. The hosted pages the SDK opens
+   * and its own texts ('Close', the consent gate, the feature badges,
+   * "Signing you in…", error messages) use that language;
+   * `onelo.auth.pageLanguage` tells you which. A `lang` passed to a single
+   * call (`paywall.openStore('de')`) wins for that call's page.
+   */
+  language?: string
+}
 
 export class Onelo {
   readonly auth: OneloAuth
@@ -68,10 +85,13 @@ export class Onelo {
     const renewPortal = (requestId: string) => this.customerPortal.renewReply(requestId)
     this.paywall.setPortalRenewer(renewPortal)
     this.paywall.setBrandSource(brand)
+    // #1079: the App's language is every Page Language request's default.
+    this.paywall.setAppLanguage(this.auth.appLanguage)
+    this.customerPortal.setAppLanguage(this.auth.appLanguage)
     this.customerPortal.setBrandSource(brand)
     this.auth.setPortalRenewer(renewPortal)
     this.forms = new OneloForms(config.apiUrl, config.publishableKey)
-    this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey)
+    this.waitlist = new OneloWaitlist(config.apiUrl, config.publishableKey, this.auth.appLanguage)
     this.monitor = new OneloMonitor(config.publishableKey, config.apiUrl, {
       appVersion: config.appVersion,
       appBuild: config.appBuild,
@@ -116,6 +136,7 @@ export class Onelo {
     this.customerPortal.setPlanChangeHandler(onPlanChange)
     this.feedback = new OneloFeedback(config.apiUrl, config.publishableKey, () => this.features.getActiveFeatures(), userToken)
     this.feedback.setBrandSource(brand)
+    this.feedback.setAppLanguage(this.auth.appLanguage)
 
     // Legal-consent gate. Auto-presents on sign-in + on `legal.consent_required`
     // (over the shared stream) unless `autoPresentConsentGate:false`, in which
@@ -123,7 +144,7 @@ export class Onelo {
     // onConsentRequired(). A blocking Terms/Privacy update then hard-blocks the
     // app (full-screen non-dismissible gate) until accepted; decline signs out.
     const autoPresentConsent = config.autoPresentConsentGate ?? true
-    this.consent = new OneloConsent(config.apiUrl, config.publishableKey, this.auth, autoPresentConsent)
+    this.consent = new OneloConsent(config.apiUrl, config.publishableKey, this.auth, autoPresentConsent, this.auth.appLanguage)
     this.consent.attachEventStream(this.eventStream)
     this.affiliates = new OneloAffiliates(config.apiUrl, config.publishableKey, () => this.auth.getSession())
 

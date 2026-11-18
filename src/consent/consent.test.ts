@@ -41,6 +41,17 @@ describe('OneloConsent — data API', () => {
     expect(items[0]).toMatchObject({ docType: 'terms', versionId: 'v-1', blocking: true, enforcement: 'block' })
   })
 
+  it('#1073: sends the browser language so the backend links the Page Language', async () => {
+    vi.stubGlobal('navigator', { language: 'de-DE' })
+    try {
+      ;(httpGet as any).mockResolvedValue({ status: 200, json: { required: [reqRow()] } })
+      await new OneloConsent('https://api', 'pk', makeAuth() as any).requiredConsents()
+      expect((httpGet as any).mock.calls[0][0]).toBe('https://api/v1/sdk/consent/required?lang=de-DE')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('fail-open [] on network error', async () => {
     ;(httpGet as any).mockRejectedValue(new Error('net'))
     expect(await new OneloConsent('https://api', 'pk', makeAuth() as any).requiredConsents()).toEqual([])

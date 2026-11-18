@@ -1,4 +1,4 @@
-import { httpGet, OneloError, extractErrorCode, NEUTRAL_BRAND_TOKENS, BrandSource, spinnerCss, portalSkeletonHtml, type BrandTokens } from '@onelo/core'
+import { requestLanguage, httpGet, OneloError, extractErrorCode, NEUTRAL_BRAND_TOKENS, BrandSource, spinnerCss, portalSkeletonHtml, type BrandTokens } from '@onelo/core'
 import { SDK_HEADERS } from '../core/sdk-headers'
 import { createModalCloseButton } from '../core/modal-close-button'
 import { installFailsafeClose } from '../core/failsafe-close'
@@ -82,6 +82,13 @@ export class OneloCustomerPortal {
     this.onSessionInvalidated = onSessionInvalidated
   }
 
+  /** #1079: the App's language (`OneloConfig.language`), the default `lang`
+   *  of upgrade-initiate. Set by `Onelo`. */
+  private appLanguage: string | undefined
+  setAppLanguage(language: string | undefined): void {
+    this.appLanguage = language || undefined
+  }
+
   /** Told when the store opened from the portal ended in a purchase or a plan
    *  switch (#659). Set by `Onelo` to its plan-change refresher. */
   private onPlanChange: ((change: PlanChange) => void) | null = null
@@ -154,8 +161,11 @@ export class OneloCustomerPortal {
     if (!token) throw new OneloError('not_authenticated', 'Sign in before opening an upgrade')
 
     // callback_scheme=web: the pages hand back by postMessage to this window,
-    // whose Origin the backend binds on the minted token (#592).
-    const url = `${this.apiUrl}/api/sdk/paywall/upgrade-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=web`
+    // whose Origin the backend binds on the minted token (#592). #1039: the
+    // App's language (#1079), else the browser's; the backend picks the Page
+    // Language.
+    const url = `${this.apiUrl}/api/sdk/paywall/upgrade-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=web` +
+      `&lang=${encodeURIComponent(requestLanguage(undefined, this.appLanguage))}`
     const { status, json } = await httpGet(url, {
       ...SDK_HEADERS,
       Authorization: `Bearer ${token}`,

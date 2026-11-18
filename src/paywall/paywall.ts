@@ -1,4 +1,4 @@
-import { httpGet, httpPost, mapSession, OneloSession, OneloError, extractErrorCode, BrandSource } from '@onelo/core'
+import { requestLanguage, httpGet, httpPost, mapSession, OneloSession, OneloError, extractErrorCode, BrandSource } from '@onelo/core'
 import { AuthModal, isExpiredAuthError, type AuthPresentMode } from '../auth/auth-modal'
 import type { PlanChange } from '../core/plan-change'
 import { classifyHandBack } from '../core/hand-back'
@@ -42,6 +42,13 @@ export class OneloPaywall {
     this.onSession = onSession
     this.getSession = getSession
     this.storeLinkChallenge = storeLinkChallenge
+  }
+
+  /** #1079: the App's language (`OneloConfig.language`), the default `lang`
+   *  of store-initiate and manage-initiate. Set by `Onelo`. */
+  private appLanguage: string | undefined
+  setAppLanguage(language: string | undefined): void {
+    this.appLanguage = language || undefined
   }
 
   /** Lets the store modal answer a checkout's portal renewal (#642). Set by
@@ -93,8 +100,11 @@ export class OneloPaywall {
   }
 
   private async initiateStore(lang?: string): Promise<string> {
-    let url = `${this.apiUrl}/api/sdk/paywall/store-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback`
-    if (lang) url += `&lang=${encodeURIComponent(lang)}`
+    // #1039: the language passed, else the App's (#1079), else the browser's;
+    // the backend picks the Page Language within the App Languages.
+    const language = requestLanguage(lang, this.appLanguage)
+    let url = `${this.apiUrl}/api/sdk/paywall/store-initiate?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback` +
+      `&lang=${encodeURIComponent(language)}`
     const returnUrl = storeReturnUrl()
     if (returnUrl) {
       url += `&return_url=${encodeURIComponent(returnUrl)}`
@@ -117,7 +127,7 @@ export class OneloPaywall {
     // #728: a store that continues in this window comes back to a fresh page
     // load; its "Signing you in…" wears this Branding and language from the
     // first frame, before the config request answers.
-    if (returnUrl) rememberStoreReturnLook(this.publishableKey, this.brand.current(), lang ?? null)
+    if (returnUrl) rememberStoreReturnLook(this.publishableKey, this.brand.current(), language)
     const storeUrl = j['store_url'] as string | undefined
     if (!storeUrl) throw OneloError.server('Invalid store-initiate response')
     return storeUrl
@@ -183,8 +193,9 @@ export class OneloPaywall {
     const accessToken = await this.getAccessToken()
     if (!accessToken) throw OneloError.server('No active session — sign in before opening the manage page')
 
-    let url = `${this.apiUrl}/api/sdk/paywall/manage-initiate?key=${encodeURIComponent(this.publishableKey)}`
-    if (lang) url += `&lang=${encodeURIComponent(lang)}`
+    // #1039: the language passed, else the App's (#1079), else the browser's.
+    const url = `${this.apiUrl}/api/sdk/paywall/manage-initiate?key=${encodeURIComponent(this.publishableKey)}` +
+      `&lang=${encodeURIComponent(requestLanguage(lang, this.appLanguage))}`
 
     const { status, json } = await httpGet(url, {
       ...SDK_HEADERS,

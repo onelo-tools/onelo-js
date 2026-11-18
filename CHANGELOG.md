@@ -5,7 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.82.1] — 2026-11-07
+## [0.86.0] — 2026-11-18
+
+### Added
+
+- The SDK's own texts follow the App User's Page Language (#1079): the close button's label, "Signing you in…" and the magic-link "You're signed in" notice, the consent gate (document name, heading, Review link, "Sign out", "Accept & Continue", "Saving…" and its error line), the feature badges (`FeatureState.badgeLabel`: "New", "Beta", "Coming soon", "Available in <plan>" with the plan name as written, "Change plan") and the `OneloError` messages an App User may be shown (signed out, sign-in cancelled, session ended, account suspended, no active subscription, network error, verification limits and links), in English, Polish, German, French, Spanish, Italian, Portuguese (European) and Dutch. The words are the hosted pages' own. `/api/sdk/config` answers the Page Language (`page_language`); the SDK keeps it for the next page load and exposes it as `onelo.auth.pageLanguage`. English until the first answer. Error codes are unchanged; messages that address the developer stay English.
+- `language` in the `Onelo` config: the App's language. The SDK sends it instead of the browser language to `/api/sdk/config` and as the default language of the sign-in, store, manage, upgrade, consent and waitlist calls and of the hosted feedback form; a language passed to a single call still wins. The backend uses it when it is one of the App Languages.
+
+### Changed
+
+- English texts take the hosted pages' words: the badge "Coming Soon" is now "Coming soon", an upsell without a plan name says "Change plan" instead of "Upgrade", the consent gate's heading reads "We’ve updated our <document>" with "Please review and accept to continue", and the cookie document is the "Cookie Policy" (#1079).
+- `OneloError.noActivePlan()`'s message is the App User's ("No active subscription — the plan has expired or was cancelled."); the `[no_active_plan]` prefix and the instruction to the developer are gone. Branch on `code === 'no_active_plan'`.
+
+## [0.85.0-staging] — 2026-11-18
+
+### Added
+
+- `waitlist.join()` sends the browser language, or the `language` the App passes in its options (sent unchanged). The backend stores the Page Language of the sign-up (one of the App Languages) on the waitlist entry for the waitlist emails (#1038).
+
+## [0.84.0-staging] — 2026-11-18
+
+### Changed
+
+- `paywall.openStore()` and `paywall.openManage()` send the browser language when the App passes none (they sent no language, so the page fell back to English). The upgrade page (`customerPortal.openUpgrade()`) and the sign-in flow send the browser language too. A language the App passes is sent unchanged (#1039). The backend picks the Page Language within the App Languages; the SDK only sends the language.
+
+## [0.83.0-staging] — 2026-11-18
+
+### Changed
+
+- `OneloConsent.requiredConsents()` sends the browser language. Each item's `url` (the gate's Review link) opens the document in the App User's language when the App offers it and a version in that language exists, else in the document's main language (#1073). The backend chooses; the SDK only sends the language.
+
+## [0.82.1-staging] — 2026-11-07
 
 ### Fixed
 

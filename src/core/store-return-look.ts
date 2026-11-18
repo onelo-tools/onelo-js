@@ -15,6 +15,7 @@
  * neutral look as before.
  */
 import type { BrandTokens } from '@onelo/core'
+import { oneloText } from './texts'
 
 const KEY = 'onelo:store-return-look'
 /** A checkout outlives its store link by far less; an older entry is stale. */
@@ -57,18 +58,9 @@ export function forgetStoreReturnLook(): void {
   try { storage()?.removeItem(KEY) } catch { /* nothing to forget */ }
 }
 
-/** "Signing you in…" in the store's languages — the hosted store's
- *  `signingIn` (frontend/lib/store-i18n.ts); keep the two in step. */
-const SIGNING_IN: Record<string, string> = {
-  en: 'Signing you in…',
-  pl: 'Logujemy Cię…',
-  de: 'Sie werden angemeldet…',
-  fr: 'Connexion en cours…',
-  es: 'Iniciando sesión…',
-  pt: 'A iniciar sessão…',
-}
-
+/** "Signing you in…" in `lang` — the hosted store's `signingIn`
+ *  (frontend/lib/store-i18n.ts), in all eight languages (#1079, texts.ts);
+ *  English for none or a language Onelo does not translate into. */
 export function signingInText(lang?: string | null): string {
-  const base = (lang ?? '').split('-')[0].toLowerCase()
-  return SIGNING_IN[base] ?? SIGNING_IN.en
+  return oneloText('signingIn', {}, lang ?? 'en')
 }

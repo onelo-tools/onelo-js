@@ -31,6 +31,10 @@ interface WaitlistConsent {
 }
 interface WaitlistJoinOptions {
     consent?: WaitlistConsent;
+    /** #1038: the App's language for this sign-up (`de`, `pt-PT`). Omitted, the
+     *  device or browser language is sent. The backend stores the join's Page
+     *  Language (one of the App Languages) for the waitlist emails. */
+    language?: string;
 }
 
 /**
@@ -138,7 +142,7 @@ interface OneloSession {
     expiresAt: number;
     user: OneloUser;
 }
-interface OneloConfig {
+interface OneloConfig$1 {
     /** Publishable key from Onelo dashboard (onelo_pk_live_...) */
     publishableKey: string;
     /** Onelo API base URL — required. Get this from your Onelo dashboard snippet. */
@@ -211,6 +215,13 @@ interface OneloConfig {
      */
     autoLifecycleRefresh?: boolean;
 }
+/**
+ * An SDK error. `code` is the machine-readable reason: branch on it. #1079 —
+ * a `message` an App User may be shown (signed out, session ended, account
+ * suspended, network, …) is in the Page Language (`page-language.ts`);
+ * messages that address the developer (a key, a configuration, server
+ * diagnostics) stay English.
+ */
 declare class OneloError extends Error {
     readonly code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'session_ended' | 'plan_required' | 'no_active_plan' | 'timeout' | 'in_app_store_not_allowed' | 'verification_rate_limited' | 'email_verification_off' | 'invalid_verification_token' | 'invalid_verify_redirect';
     constructor(code: 'not_authenticated' | 'hosted_flow_required' | 'invalid_publishable_key' | 'network_error' | 'server_error' | 'cancelled' | 'revoked' | 'user_revoked' | 'session_ended' | 'plan_required' | 'no_active_plan' | 'timeout' | 'in_app_store_not_allowed' | 'verification_rate_limited' | 'email_verification_off' | 'invalid_verification_token' | 'invalid_verify_redirect', message: string);
@@ -227,6 +238,7 @@ declare class OneloError extends Error {
      * The END USER has no active subscription (it lapsed or was cancelled) — the
      * backend cleared the session. This is NOT a config error and NOT an account
      * revocation: route the user to your store / upgrade flow to re-subscribe.
+     * #1079: the message is the App User's, in the Page Language.
      */
     static noActivePlan(): OneloError;
     static invalidKey(msg: string): OneloError;
@@ -625,6 +637,19 @@ declare class OneloAuth {
      *  config (or on an older backend) the minimal shape: never a pill the page
      *  will not draw. */
     authSkeletonShape(): AuthSkeletonShape;
+    /** #1079: the App's language for its App User (`OneloConfig.language`), or
+     *  undefined to use the browser language. The default `lang` of every Page
+     *  Language request this SDK makes. */
+    readonly appLanguage: string | undefined;
+    /**
+     * #1079 — the **Page Language** the SDK's own texts are drawn in ('Close',
+     * the consent gate, the feature badges, "Signing you in…", error messages):
+     * the App's `language` when it is one of the App Languages, else the browser
+     * language when it is one, else the App's default. Onelo chooses it
+     * (`page_language` of `/api/sdk/config`); 'en' until the first answer, or
+     * the language an earlier page load was given.
+     */
+    get pageLanguage(): string;
     constructor(config: OneloConfig, brand?: BrandSource);
     private initialize;
     whenReady(): Promise<void>;
@@ -1002,8 +1027,9 @@ declare class FeatureState {
     get isNew(): boolean;
     get isBeta(): boolean;
     get isComingSoon(): boolean;
-    /** Promo/lock badge (parity with Swift): New/Beta/Coming Soon, 🔒 for greyed
-     *  (locked — never hide it), and "Available in <plan>" for upsell. */
+    /** Promo/lock badge (parity with Swift): New/Beta/Coming soon, 🔒 for greyed
+     *  (locked — never hide it), and "Available in <plan>" for upsell. #1079: in
+     *  the Page Language, with the hosted pages' words; the plan name as written. */
     get badgeLabel(): string | null;
     /** Non-null when the feature is plan-blocked AND the backend named the
      *  unlocking plan — surface in upgrade-prompt UI. */
@@ -1295,6 +1321,9 @@ declare class OneloFeedback {
     /** The SDK's brand-token model (#681). `Onelo` shares its own. */
     private brand;
     setBrandSource(brand: BrandSource): void;
+    /** #1079: the App's language (`OneloConfig.language`). Set by `Onelo`. */
+    private appLanguage;
+    setAppLanguage(language: string | undefined): void;
     constructor(apiUrl: string, publishableKey: string, getActiveFeatures: () => string[], 
     /** The signed-in Onelo user's access token (#820). Wired by `Onelo` to
      *  `auth`; with a session the initiate call carries it and the report names
@@ -1303,6 +1332,11 @@ declare class OneloFeedback {
     open(options?: FeedbackOptions): Promise<void>;
     /** Mint a hosted feedback URL (and with it a fresh reporter token `ft`). */
     private initiate;
+    /** #1079: the hosted form reads its Page Language from `?lang=` (the App's
+     *  language, kept only when it is one of the App Languages), else from the
+     *  browser's Accept-Language — which the iframe sends by itself. So the App's
+     *  language rides along only when the App set one. */
+    private withAppLanguage;
     /**
      * Answer the hosted form's `onelo:renew_request` (kind `feedback`, #622). The
      * form's reporter token `ft` lives 30 minutes; a form left open longer asks
@@ -1331,6 +1365,10 @@ declare class OneloPaywall {
     /** #727: the challenge a store magic link is paired to; its verifier stays
      *  in this page's storage (`OneloAuth.storeLinkChallenge`). */
     storeLinkChallenge?: () => Promise<string | null>);
+    /** #1079: the App's language (`OneloConfig.language`), the default `lang`
+     *  of store-initiate and manage-initiate. Set by `Onelo`. */
+    private appLanguage;
+    setAppLanguage(language: string | undefined): void;
     /** Lets the store modal answer a checkout's portal renewal (#642). Set by
      *  `Onelo` to the customer portal's `renewReply`. */
     setPortalRenewer(fn: ((requestId: string) => Promise<Record<string, unknown>>) | null): void;
@@ -1391,9 +1429,15 @@ declare class OneloForms {
 declare class OneloWaitlist {
     private readonly apiUrl;
     private readonly publishableKey;
-    constructor(apiUrl: string, publishableKey: string);
+    /** #1079: the App's language (`OneloConfig.language`), the join's default. */
+    private readonly appLanguage?;
+    constructor(apiUrl: string, publishableKey: string, 
+    /** #1079: the App's language (`OneloConfig.language`), the join's default. */
+    appLanguage?: string | undefined);
     join(slug: string | undefined, email: string, 
-    /** #818: the checkboxes your form showed — `{ consent: { marketing, custom } }`. */
+    /** #818: the checkboxes your form showed — `{ consent: { marketing, custom } }`.
+     *  #1038: `language` — the App's language for this sign-up; omitted, the
+     *  device language is sent and the backend stores the join's Page Language. */
     options?: WaitlistJoinOptions): Promise<{
         success: boolean;
         position?: number;
@@ -1410,6 +1454,10 @@ declare class OneloCustomerPortal {
     private brand;
     setBrandSource(brand: BrandSource): void;
     constructor(apiUrl: string, publishableKey: string, getAccessToken: () => Promise<string | null>, onSessionInvalidated?: () => void);
+    /** #1079: the App's language (`OneloConfig.language`), the default `lang`
+     *  of upgrade-initiate. Set by `Onelo`. */
+    private appLanguage;
+    setAppLanguage(language: string | undefined): void;
     /** Told when the store opened from the portal ended in a purchase or a plan
      *  switch (#659). Set by `Onelo` to its plan-change refresher. */
     private onPlanChange;
@@ -1509,7 +1557,9 @@ declare class OneloConsent {
     private _inertedSiblings;
     /** Tab-trap keydown handler, removed on close. */
     private _trapHandler;
-    constructor(apiUrl: string, publishableKey: string, auth: OneloAuth, autoPresent?: boolean);
+    /** #1079: the App's language (`OneloConfig.language`), the default `lang`. */
+    private readonly appLanguage;
+    constructor(apiUrl: string, publishableKey: string, auth: OneloAuth, autoPresent?: boolean, appLanguage?: string);
     get consentRevision(): number;
     /** Subscribe to `legal.consent_required` pushes (revision bumps). Returns an
      *  unsubscribe fn. Use when you build your own consent UI instead of the
@@ -1597,6 +1647,22 @@ declare class OneloAffiliates {
     claimForSession(): Promise<void>;
 }
 
+/** The Web SDK's configuration: the shared `@onelo/core` options plus this
+ *  SDK's own. */
+interface OneloConfig extends OneloConfig$1 {
+    /**
+     * #1079 — the App's language for its App User (a BCP 47 tag such as `'de'`
+     * or `'pt-PT'`), e.g. the language your own UI is set to. Omitted, the
+     * browser language is used. Onelo picks the **Page Language** from it: this
+     * language when it is one of your App Languages, else the browser language
+     * when it is one, else your App's default. The hosted pages the SDK opens
+     * and its own texts ('Close', the consent gate, the feature badges,
+     * "Signing you in…", error messages) use that language;
+     * `onelo.auth.pageLanguage` tells you which. A `lang` passed to a single
+     * call (`paywall.openStore('de')`) wins for that call's page.
+     */
+    language?: string;
+}
 declare class Onelo {
     readonly auth: OneloAuth;
     readonly features: OneloFeatures;

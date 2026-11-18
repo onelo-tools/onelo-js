@@ -17,6 +17,7 @@
  * the first cover goes up before config arrives, so it starts neutral.
  */
 import { NEUTRAL_BRAND_TOKENS, spinnerCss, type BrandTokens } from '@onelo/core'
+import { oneloText } from './texts'
 
 const ID = 'onelo-handed-over'
 
@@ -48,13 +49,14 @@ function stopWatching(): void {
  * The wording is honest about the state at THIS point: the exchange has not
  * happened yet, so it cannot claim a sign-in.
  */
-export function coverPage(t: BrandTokens = NEUTRAL_BRAND_TOKENS, heading = 'Signing you in…'): void {
+export function coverPage(t: BrandTokens = NEUTRAL_BRAND_TOKENS, heading = oneloText('signingIn')): void {
   // `watch` from the very first moment: the app boots UNDER this cover and many
   // apps paint by replacing <body>, which would tear it out and produce exactly
   // the flash this prevents.
   // #728: `heading` is localized by the store return (the store's language),
   // and the pending cover carries the hosted pages' spinner, so the buyer's
-  // last step looks like the checkout steps before it.
+  // last step looks like the checkout steps before it. #1079: by default the
+  // Page Language (kept from the last page load: this goes up before config).
   render(heading, null, t, { watch: true, pending: true })
 }
 
@@ -77,7 +79,7 @@ export function showHandedOverNotice(
   waitingTab: boolean | null = true,
   t: BrandTokens = NEUTRAL_BRAND_TOKENS,
 ): void {
-  render("You're signed in", appName ?? null, t, { watch: true, pending: waitingTab === null, waitingTab: waitingTab !== false })
+  render(oneloText('signedIn'), appName ?? null, t, { watch: true, pending: waitingTab === null, waitingTab: waitingTab !== false })
 }
 
 
@@ -172,12 +174,12 @@ function bodyText(appName: string | null, pending: boolean, waitingTab = true): 
   // finds it.
   if (!waitingTab) {
     return appName
-      ? `You can close this tab and open ${appName} again.`
-      : 'You can close this tab and open the app again.'
+      ? oneloText('closeTabReopenApp', { app: appName })
+      : oneloText('closeTabReopen')
   }
   return appName
-    ? `Continue in the ${appName} tab you started from — you can close this one.`
-    : 'Continue in the tab you started from — you can close this one.'
+    ? oneloText('continueInAppTab', { app: appName })
+    : oneloText('continueInTab')
 }
 
 function keepAttached(root: HTMLElement): void {

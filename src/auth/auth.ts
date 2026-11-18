@@ -17,7 +17,6 @@ import {
   type ExternalTokenGetter,
 } from './external-token'
 import {
-  OneloConfig,
   OneloSession,
   OneloUser,
   OneloEntitlement,
@@ -29,7 +28,12 @@ import {
 } from '@onelo/core'
 import { SDK_HEADERS } from '../core/sdk-headers'
 import { BrandSource, resendVerificationEmail as postResendVerification, confirmEmail as postConfirmEmail, mergeAccessAnswer, type ResendVerificationResult } from '@onelo/core'
+import type { OneloConfig } from '../onelo'
+import { keepPageLanguage, keptPageLanguage } from '../core/texts'
 import {
+  adoptPageLanguage,
+  pageLanguage as currentPageLanguage,
+  requestLanguage,
   configLanguageParam,
   signUpConsentFields,
   signupMarketingConsentFromConfig,
@@ -215,12 +219,33 @@ export class OneloAuth {
     return { socialCount: c.oauthProviders?.length ?? 0, magicLink: c.magicLinkEnabled === true }
   }
 
+  /** #1079: the App's language for its App User (`OneloConfig.language`), or
+   *  undefined to use the browser language. The default `lang` of every Page
+   *  Language request this SDK makes. */
+  readonly appLanguage: string | undefined
+
+  /**
+   * #1079 — the **Page Language** the SDK's own texts are drawn in ('Close',
+   * the consent gate, the feature badges, "Signing you in…", error messages):
+   * the App's `language` when it is one of the App Languages, else the browser
+   * language when it is one, else the App's default. Onelo chooses it
+   * (`page_language` of `/api/sdk/config`); 'en' until the first answer, or
+   * the language an earlier page load was given.
+   */
+  get pageLanguage(): string {
+    return currentPageLanguage()
+  }
+
   constructor(config: OneloConfig, brand: BrandSource = new BrandSource()) {
     this.brand = brand
     if (!config.apiUrl) throw new Error('[Onelo] apiUrl is required')
     if (!config.publishableKey) throw new Error('[Onelo] publishableKey is required')
     this.apiUrl = config.apiUrl
     this.publishableKey = config.publishableKey
+    this.appLanguage = config.language || undefined
+    // #1079: the first paint (a magic-link cover goes up before config answers)
+    // speaks the Page Language an earlier page load was given.
+    adoptPageLanguage(keptPageLanguage())
     this.storage = new TokenStorage()
     this.initPromise = this.initialize()
   }
@@ -242,8 +267,10 @@ export class OneloAuth {
       const verifier = generateCodeVerifier()
       this.pkceVerifier = verifier
       const challenge = await generateCodeChallenge(verifier)
-      // #818: `lang` puts the sign-up Marketing Consent text in the browser's language.
-      const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}${configLanguageParam()}`
+      // #818: `lang` puts the sign-up Marketing Consent text in that language.
+      // #1079: the App's language, else the browser's; the backend answers the
+      // Page Language from it (and the browser's own Accept-Language).
+      const url = `${this.apiUrl}/api/sdk/config?key=${encodeURIComponent(this.publishableKey)}&code_challenge=${encodeURIComponent(challenge)}${configLanguageParam(requestLanguage(undefined, this.appLanguage))}`
       // X-Onelo-OS decides whether the "Require plan on sign-up" gate applies:
       // inside a Capacitor/Cordova iOS shell this SDK runs in an App Store app,
       // where showing the store in-app is not allowed. A plain browser reports
@@ -258,6 +285,10 @@ export class OneloAuth {
       // #681: `brand_tokens`, or the shape the legacy colours imply.
       const brandTokens = brandTokensFromResponse(j) ?? NEUTRAL_BRAND_TOKENS
       this.brand.set(brandTokens)
+      // #1079 (#1074): the Page Language Onelo chose. Missing (older backend,
+      // App Languages unreadable) → the texts keep the language they had.
+      const adopted = adoptPageLanguage(j['page_language'])
+      if (adopted) keepPageLanguage(adopted)
       this.resolvedConfig = {
         supabaseUrl: j['supabase_url'] as string,
         supabaseAnonKey: j['supabase_anon_key'] as string,
@@ -563,8 +594,10 @@ export class OneloAuth {
     // device sign THIS tab in without giving that device anything.
     const challenge = this.pkceVerifier ? await generateCodeChallenge(this.pkceVerifier) : null
     const challengeParam = challenge ? `&code_challenge=${encodeURIComponent(challenge)}` : ''
+    // #1039: the App's language (#1079), else the browser's; the backend picks
+    // the sign-in page's Page Language within the App Languages.
     const { status, json } = await httpGet(
-      `${this.apiUrl}/api/sdk/flow/init?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback${challengeParam}`,
+      `${this.apiUrl}/api/sdk/flow/init?key=${encodeURIComponent(this.publishableKey)}&callback_scheme=onelo-callback${challengeParam}&lang=${encodeURIComponent(requestLanguage(undefined, this.appLanguage))}`,
       headers,
     )
     if (status !== 200) {
@@ -1726,9 +1759,11 @@ export class OneloAuth {
   private coverStoreReturn(): void {
     const look = recallStoreReturnLook(this.publishableKey)
     // The store's own language when it was opened from here (none given →
-    // the store spoke English, so does this); the browser's only without a
-    // remembered look.
-    const lang = look ? look.lang : (typeof navigator !== 'undefined' ? navigator.language : null)
+    // the store spoke English, so does this); without a remembered look the
+    // Page Language an earlier page load was given (#1079), else the browser's.
+    const lang = look
+      ? look.lang
+      : keptPageLanguage() ?? (typeof navigator !== 'undefined' ? navigator.language : null)
     coverPage(look?.tokens ?? this.brand.current(), signingInText(lang))
   }
 

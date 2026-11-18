@@ -1,4 +1,5 @@
 import { httpPost } from '@onelo/core'
+import { oneloText } from '../core/texts'
 import { OneloEventStream, type StreamConnectionIdentity } from '../core/event-stream'
 import { bearerHeader, sendWithUserToken, type UserTokenSource } from '../core/user-token'
 
@@ -109,18 +110,19 @@ export class FeatureState {
   get isBeta(): boolean { return this.status === 'beta' }
   get isComingSoon(): boolean { return this.status === 'coming_soon' }
 
-  /** Promo/lock badge (parity with Swift): New/Beta/Coming Soon, 🔒 for greyed
-   *  (locked — never hide it), and "Available in <plan>" for upsell. */
+  /** Promo/lock badge (parity with Swift): New/Beta/Coming soon, 🔒 for greyed
+   *  (locked — never hide it), and "Available in <plan>" for upsell. #1079: in
+   *  the Page Language, with the hosted pages' words; the plan name as written. */
   get badgeLabel(): string | null {
     switch (this.status) {
-      case 'new': return 'New'
-      case 'beta': return 'Beta'
-      case 'coming_soon': return 'Coming Soon'
+      case 'new': return oneloText('badgeNew')
+      case 'beta': return oneloText('badgeBeta')
+      case 'coming_soon': return oneloText('badgeComingSoon')
       case 'greyed': return '🔒'
       case 'upsell':
-        if (this.requiredPlanLabel) return `Available in ${this.requiredPlanLabel}`
-        if (this.requiredPlan) return `Available in ${this.requiredPlan}`
-        return 'Upgrade'
+        if (this.requiredPlanLabel) return oneloText('badgeAvailableIn', { plan: this.requiredPlanLabel })
+        if (this.requiredPlan) return oneloText('badgeAvailableIn', { plan: this.requiredPlan })
+        return oneloText('badgeUpgrade')
       default: return null
     }
   }
